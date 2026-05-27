@@ -112,10 +112,10 @@ const GoogleApiScriptUrl = 'https://apis.google.com/js/api.js';
 const DriveApiBaseUrl = 'https://www.googleapis.com/drive/v3/files';
 const PdfMimeType = 'application/pdf';
 const TokenRefreshSkewMs = 60_000;
-const PickerMaxWidth = 1051;
+const PickerMaxWidth = 980;
 const PickerMinWidth = 720;
-const PickerMaxHeight = 620;
-const PickerMinHeight = 500;
+const PickerMaxHeight = 560;
+const PickerMinHeight = 460;
 
 let identityScriptPromise: Promise<void> | null = null;
 let pickerScriptPromise: Promise<void> | null = null;
@@ -333,13 +333,13 @@ function loadScript(src: string): Promise<void> {
 function getPickerSize(): { width: number; height: number } {
   const viewportWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
   const viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
-  const maxWidth = Math.max(320, Math.min(PickerMaxWidth, viewportWidth - 112));
-  const maxHeight = Math.max(420, Math.min(PickerMaxHeight, viewportHeight - 180));
+  const maxWidth = Math.max(320, Math.min(PickerMaxWidth, viewportWidth - 180));
+  const maxHeight = Math.max(360, Math.min(PickerMaxHeight, viewportHeight - 260));
   const minWidth = Math.min(PickerMinWidth, maxWidth);
   const minHeight = Math.min(PickerMinHeight, maxHeight);
   return {
-    width: clampNumber(Math.floor(viewportWidth - 160), minWidth, maxWidth),
-    height: clampNumber(Math.floor(viewportHeight - 220), minHeight, maxHeight),
+    width: clampNumber(Math.floor(viewportWidth - 240), minWidth, maxWidth),
+    height: clampNumber(Math.floor(viewportHeight - 300), minHeight, maxHeight),
   };
 }
 

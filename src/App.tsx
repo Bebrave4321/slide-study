@@ -1283,6 +1283,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      <div className={`app-content-layer ${drivePickerOpen ? 'picker-active' : ''}`}>
       <input
         ref={fileInputRef}
         type="file"
@@ -1311,7 +1312,6 @@ function App() {
           event.target.value = '';
         }}
       />
-      {drivePickerOpen && <div className="external-picker-backdrop" aria-hidden="true" />}
       <TopBar
         screen={screen}
         theme={stored.settings.theme}
@@ -1411,6 +1411,7 @@ function App() {
           onClose={() => setDialog(null)}
         />
       )}
+      </div>
     </div>
   );
 }
