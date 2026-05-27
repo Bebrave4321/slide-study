@@ -252,6 +252,48 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function driveImportMessage(error: unknown, fallback: string): string {
+  const message = errorMessage(error, fallback);
+  const normalized = message.toLowerCase();
+  if (normalized.includes('missing config')) {
+    return 'Google Drive is not configured for this build.';
+  }
+  if (normalized.includes('sign-in was closed') || normalized.includes('popup_closed')) {
+    return 'Google sign-in was closed. Try Drive again when you are ready.';
+  }
+  if (normalized.includes('could not load https://accounts.google.com') || normalized.includes('could not load https://apis.google.com')) {
+    return 'Could not load Google Drive. Check the connection and try again.';
+  }
+  if (normalized.includes('could not download the drive pdf') || normalized.includes('(401)') || normalized.includes('(403)')) {
+    return 'Could not download this Drive PDF. Check that this Google account can open the file.';
+  }
+  if (normalized.includes('google drive picker could not be loaded')) {
+    return 'Google Drive Picker could not be loaded. Refresh the page and try again.';
+  }
+  if (normalized.includes('could not read the selected drive pdf')) {
+    return 'Could not read the selected Drive PDF. Choose the file again.';
+  }
+  return message;
+}
+
+function resetWindowScroll(): void {
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+function restoreAppViewport(focusTarget: HTMLElement | null): void {
+  window.setTimeout(() => {
+    resetWindowScroll();
+    window.requestAnimationFrame(() => {
+      resetWindowScroll();
+      if (focusTarget && document.contains(focusTarget)) {
+        focusTarget.focus({ preventScroll: true });
+      }
+    });
+  }, 0);
+}
+
 function getSourceKindLabel(sourceKind: DocumentSourceKind): string {
   return sourceKind === 'drive' ? 'Drive PDF' : 'Local PDF';
 }
@@ -425,14 +467,25 @@ function App() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [pendingDriveImport, setPendingDriveImport] = useState<PendingDriveImport | null>(null);
   const [drivePickerOpen, setDrivePickerOpen] = useState(false);
+  const [driveBusy, setDriveBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const pendingReconnectDocKeyRef = useRef<string | null>(null);
+  const driveBusyRef = useRef(false);
   const driveConfigStatus = useMemo(() => getDriveConfigStatus(), []);
 
   useEffect(() => {
     preloadDriveApis();
+  }, []);
+
+  useEffect(() => {
+    const previousScrollRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = 'manual';
+    resetWindowScroll();
+    return () => {
+      window.history.scrollRestoration = previousScrollRestoration;
+    };
   }, []);
 
   const markDriveFileAccessGranted = useCallback(() => {
@@ -475,6 +528,16 @@ function App() {
   useEffect(() => {
     document.body.classList.toggle('dark', stored.settings.theme === 'dark');
   }, [stored.settings.theme]);
+
+  useEffect(() => {
+    document.body.classList.toggle('drive-picker-open', drivePickerOpen);
+    if (!drivePickerOpen) {
+      restoreAppViewport(null);
+    }
+    return () => {
+      document.body.classList.remove('drive-picker-open');
+    };
+  }, [drivePickerOpen]);
 
   useEffect(() => {
     const selected = getStoredDocument(stored, stored.settings.selectedDocKey);
@@ -760,21 +823,33 @@ function App() {
       commitLoadedDrivePdf(loaded, previous, null, previous ? statusKind : 'added');
     } catch (error) {
       if (loaded?.document) void loaded.document.destroy();
-      setStatusText(errorMessage(error, 'Could not open the Drive PDF.'));
+      setStatusText(driveImportMessage(error, 'Could not open the Drive PDF.'));
     }
   }, [commitLoadedDrivePdf, driveAuthOptions, stored]);
 
   const addDrivePdf = useCallback(async () => {
+    if (driveBusyRef.current) {
+      setStatusText('Google Drive is already working.');
+      return;
+    }
     if (!driveConfigStatus.configured) {
-      setStatusText(`Google Drive config is missing: ${driveConfigStatus.missing.join(', ')}.`);
+      setStatusText(`Google Drive is not configured for this build: ${driveConfigStatus.missing.join(', ')}.`);
       return;
     }
 
+    driveBusyRef.current = true;
+    setDriveBusy(true);
+    const focusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setStatusText('Opening Google Drive...');
     try {
       setDrivePickerOpen(true);
-      const driveFile = await pickDrivePdf(driveAuthOptions);
-      setDrivePickerOpen(false);
+      let driveFile: DrivePdfFile | null = null;
+      try {
+        driveFile = await pickDrivePdf(driveAuthOptions);
+      } finally {
+        setDrivePickerOpen(false);
+        restoreAppViewport(focusTarget);
+      }
       if (!driveFile) {
         setStatusText('Drive picker closed.');
         return;
@@ -805,7 +880,11 @@ function App() {
       setStatusText(`Choose a subject for ${titleFromFileName(loaded.source.fileName)}.`);
     } catch (error) {
       setDrivePickerOpen(false);
-      setStatusText(errorMessage(error, 'Could not open Google Drive.'));
+      restoreAppViewport(focusTarget);
+      setStatusText(driveImportMessage(error, 'Could not open Google Drive.'));
+    } finally {
+      driveBusyRef.current = false;
+      setDriveBusy(false);
     }
   }, [driveAuthOptions, driveConfigStatus.configured, driveConfigStatus.missing, openDrivePdf, stored]);
 
@@ -1337,6 +1416,7 @@ function App() {
           onSortModeChange={setSortMode}
           onAddPdf={requestPdf}
           onAddDrivePdf={addDrivePdf}
+          driveBusy={driveBusy}
           driveConfigured={driveConfigStatus.configured}
           onSelectDoc={selectStoredDoc}
           onAssignDocSubject={assignDocSubject}
@@ -1468,6 +1548,7 @@ function LibraryScreen({
   onSortModeChange,
   onAddPdf,
   onAddDrivePdf,
+  driveBusy,
   driveConfigured,
   onSelectDoc,
   onAssignDocSubject,
@@ -1493,6 +1574,7 @@ function LibraryScreen({
   onSortModeChange: (mode: SortMode) => void;
   onAddPdf: () => void;
   onAddDrivePdf: () => void;
+  driveBusy: boolean;
   driveConfigured: boolean;
   onSelectDoc: (doc: StoredDocument) => void;
   onAssignDocSubject: (docKey: string, subjectId: string | null) => void;
@@ -1502,6 +1584,12 @@ function LibraryScreen({
 }) {
   const unfiledCount = allDocs.filter((doc) => !doc.subjectId).length;
   const selectedSubject = selectedSubjectId ? subjects.find((subject) => subject.id === selectedSubjectId) : null;
+  const driveDisabled = !driveConfigured || driveBusy;
+  const driveTitle = driveBusy
+    ? 'Google Drive is opening'
+    : driveConfigured
+      ? 'Add from Drive'
+      : 'Google Drive config missing';
 
   return (
     <main className="content">
@@ -1556,12 +1644,12 @@ function LibraryScreen({
               </div>
               <button
                 className="ghost-btn"
-                disabled={!driveConfigured}
-                title={driveConfigured ? 'Add from Drive' : 'Google Drive config missing'}
+                disabled={driveDisabled}
+                title={driveTitle}
                 onClick={onAddDrivePdf}
               >
                 <Cloud size={16} />
-                Drive
+                {driveBusy ? 'Opening...' : 'Drive'}
               </button>
               <button className="primary-btn" onClick={onAddPdf}>
                 <Upload size={16} />
@@ -1579,12 +1667,12 @@ function LibraryScreen({
               <div className="library-empty-actions">
                 <button
                   className="ghost-btn"
-                  disabled={!driveConfigured}
-                  title={driveConfigured ? 'Add from Drive' : 'Google Drive config missing'}
+                  disabled={driveDisabled}
+                  title={driveTitle}
                   onClick={onAddDrivePdf}
                 >
                   <Cloud size={16} />
-                  Drive
+                  {driveBusy ? 'Opening...' : 'Drive'}
                 </button>
                 <button className="ghost-btn" onClick={onAddPdf}>
                   <Upload size={16} />
