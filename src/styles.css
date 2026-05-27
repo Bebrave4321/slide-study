@@ -1211,7 +1211,7 @@ body.drive-picker-open {
 
 .settings-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 8px;
 }
 
@@ -1255,6 +1255,39 @@ body.drive-picker-open {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
+}
+
+.sync-status-card {
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+}
+
+.sync-status-card span {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.sync-status-card strong {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.sync-status-card.syncing {
+  border-color: var(--accent);
+}
+
+.sync-status-card.failed,
+.sync-status-card.needs-auth {
+  border-color: color-mix(in srgb, var(--danger) 70%, var(--border) 30%);
 }
 
 @media (max-width: 920px) {

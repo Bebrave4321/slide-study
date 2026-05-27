@@ -19,8 +19,25 @@ export type DrivePdfFile = {
 
 export type DriveAuthOptions = {
   hasGrantedFileAccess?: boolean;
+  hasGrantedAppDataAccess?: boolean;
   forceAccountSelection?: boolean;
+  forceConsent?: boolean;
   onTokenGranted?: () => void;
+};
+
+export type DriveAppDataJsonFile = {
+  id: string;
+  name: string;
+  modifiedTime: string | null;
+  size: number | null;
+  data: unknown;
+};
+
+export type DriveAppDataSaveResult = {
+  id: string;
+  name: string;
+  modifiedTime: string | null;
+  size: number | null;
 };
 
 type GoogleTokenResponse = {
@@ -105,12 +122,14 @@ declare global {
 
 const DriveFileScope = 'https://www.googleapis.com/auth/drive.file';
 export const DriveAppDataScope = 'https://www.googleapis.com/auth/drive.appdata';
-export const DriveScopes = [DriveFileScope] as const;
+export const DriveScopes = [DriveFileScope, DriveAppDataScope] as const;
 
 const GoogleIdentityScriptUrl = 'https://accounts.google.com/gsi/client';
 const GoogleApiScriptUrl = 'https://apis.google.com/js/api.js';
 const DriveApiBaseUrl = 'https://www.googleapis.com/drive/v3/files';
+const DriveUploadBaseUrl = 'https://www.googleapis.com/upload/drive/v3/files';
 const PdfMimeType = 'application/pdf';
+const JsonMimeType = 'application/json';
 const TokenRefreshSkewMs = 60_000;
 const PickerMaxWidth = 980;
 const PickerMinWidth = 720;
@@ -238,6 +257,86 @@ export async function fetchDrivePdfMetadata(fileId: string, authOptions: DriveAu
   };
 }
 
+export async function readDriveAppDataJsonFile(
+  fileName: string,
+  authOptions: DriveAuthOptions = {},
+): Promise<DriveAppDataJsonFile | null> {
+  const token = await getDriveAccessToken(authOptions);
+  const params = new URLSearchParams({
+    spaces: 'appDataFolder',
+    q: `name = '${escapeDriveQueryString(fileName)}' and trashed = false`,
+    fields: 'files(id,name,modifiedTime,size)',
+    pageSize: '1',
+  });
+  const listResponse = await fetch(`${DriveApiBaseUrl}?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!listResponse.ok) {
+    handleAuthFailure(listResponse.status);
+    throw new Error(`Could not read Drive sync file (${listResponse.status}).`);
+  }
+
+  const listRaw = await listResponse.json() as unknown;
+  const files = isRecord(listRaw) && Array.isArray(listRaw.files) ? listRaw.files : [];
+  const first = files.find(isRecord) ?? null;
+  if (!first) return null;
+
+  const id = textOrNull(first.id);
+  const name = textOrNull(first.name) ?? fileName;
+  if (!id) return null;
+
+  const mediaResponse = await fetch(`${DriveApiBaseUrl}/${encodeURIComponent(id)}?alt=media`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: JsonMimeType,
+    },
+  });
+  if (!mediaResponse.ok) {
+    handleAuthFailure(mediaResponse.status);
+    throw new Error(`Could not download Drive sync file (${mediaResponse.status}).`);
+  }
+
+  return {
+    id,
+    name,
+    modifiedTime: textOrNull(first.modifiedTime),
+    size: numberFromText(first.size),
+    data: await mediaResponse.json() as unknown,
+  };
+}
+
+export async function saveDriveAppDataJsonFile(
+  fileName: string,
+  data: unknown,
+  authOptions: DriveAuthOptions = {},
+  existingFileId?: string | null,
+): Promise<DriveAppDataSaveResult> {
+  const token = await getDriveAccessToken(authOptions);
+  const body = JSON.stringify(data, null, 2);
+  const response = existingFileId
+    ? await updateDriveAppDataJsonFile(existingFileId, body, token)
+    : await createDriveAppDataJsonFile(fileName, body, token);
+  if (!response.ok) {
+    handleAuthFailure(response.status);
+    throw new Error(`Could not save Drive sync file (${response.status}).`);
+  }
+
+  const raw = await response.json() as unknown;
+  if (!isRecord(raw)) throw new Error('Drive did not return sync file metadata.');
+  const id = textOrNull(raw.id);
+  const name = textOrNull(raw.name) ?? fileName;
+  if (!id) throw new Error('Drive did not return a sync file ID.');
+
+  return {
+    id,
+    name,
+    modifiedTime: textOrNull(raw.modifiedTime),
+    size: numberFromText(raw.size),
+  };
+}
+
 async function getDriveAccessToken(
   authOptions: DriveAuthOptions = {},
   config = requireDriveConfig(),
@@ -277,11 +376,71 @@ async function getDriveAccessToken(
 
     const prompt = authOptions.forceAccountSelection
       ? 'select_account'
-      : authOptions.hasGrantedFileAccess
+      : authOptions.forceConsent || !authOptions.hasGrantedFileAccess || !authOptions.hasGrantedAppDataAccess
+        ? 'consent'
+        : authOptions.hasGrantedFileAccess && authOptions.hasGrantedAppDataAccess
         ? ''
         : 'consent';
     tokenClient.requestAccessToken({ prompt });
   });
+}
+
+function createDriveAppDataJsonFile(fileName: string, body: string, token: string): Promise<Response> {
+  const boundary = `slide-study-${Date.now().toString(36)}`;
+  const metadata = {
+    name: fileName,
+    parents: ['appDataFolder'],
+    mimeType: JsonMimeType,
+  };
+  const multipartBody = [
+    `--${boundary}`,
+    `Content-Type: ${JsonMimeType}; charset=UTF-8`,
+    '',
+    JSON.stringify(metadata),
+    `--${boundary}`,
+    `Content-Type: ${JsonMimeType}; charset=UTF-8`,
+    '',
+    body,
+    `--${boundary}--`,
+    '',
+  ].join('\r\n');
+  const params = new URLSearchParams({
+    uploadType: 'multipart',
+    fields: 'id,name,modifiedTime,size',
+  });
+  return fetch(`${DriveUploadBaseUrl}?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body: multipartBody,
+  });
+}
+
+function updateDriveAppDataJsonFile(fileId: string, body: string, token: string): Promise<Response> {
+  const params = new URLSearchParams({
+    uploadType: 'media',
+    fields: 'id,name,modifiedTime,size',
+  });
+  return fetch(`${DriveUploadBaseUrl}/${encodeURIComponent(fileId)}?${params.toString()}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `${JsonMimeType}; charset=UTF-8`,
+    },
+    body,
+  });
+}
+
+function handleAuthFailure(status: number): void {
+  if (status === 401 || status === 403) {
+    accessTokenState = null;
+  }
+}
+
+function escapeDriveQueryString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 function requireDriveConfig(): DriveConfig {

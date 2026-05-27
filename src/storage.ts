@@ -16,6 +16,19 @@ export type DocumentSourceKind = 'local' | 'drive';
 
 export type DriveAuthSettingsState = {
   hasGrantedFileAccess: boolean;
+  hasGrantedAppDataAccess: boolean;
+};
+
+export type DriveSyncSettingsState = {
+  enabled: boolean;
+  deviceId: string;
+  lastSyncedAt: number | null;
+  lastRemoteModifiedTime: string | null;
+  pendingSubjectTombstones: Record<string, number>;
+  pendingDocumentTombstones: Record<string, number>;
+  pendingCommentTombstones: Record<string, number>;
+  lastPageUpdatedAt: Record<string, number>;
+  bookmarkUpdatedAt: Record<string, number>;
 };
 
 export type StoredSubject = {
@@ -74,10 +87,11 @@ export type AppSettingsState = {
   sortMode: SortMode;
   copySettings: CopyPacketOptions;
   driveAuth: DriveAuthSettingsState;
+  driveSync: DriveSyncSettingsState;
 };
 
 export type AppState = {
-  schemaVersion: 4;
+  schemaVersion: 5;
   settings: AppSettingsState;
   subjects: Record<string, StoredSubject>;
   documents: Record<string, DocumentLibraryMetadata>;
@@ -114,7 +128,7 @@ type BookmarkStoreRecord = { docKey: string; pages: number[] };
 export const AppStorageKey = 'slide-study-web-v2';
 export const AppIndexedDbName = 'slide-study-web';
 export const AppIndexedDbVersion = 1;
-export const AppStateSchemaVersion = 4;
+export const AppStateSchemaVersion = 5;
 export const AppBackupSchemaVersion = 1;
 export const UnfiledSubjectId = '__unfiled__';
 export const DefaultZoomMode: ZoomMode = 'fitPage';
@@ -134,6 +148,19 @@ export const DefaultCopyPacketOptions: CopyPacketOptions = {
 
 export const DefaultDriveAuthSettings: DriveAuthSettingsState = {
   hasGrantedFileAccess: false,
+  hasGrantedAppDataAccess: false,
+};
+
+export const DefaultDriveSyncSettings: DriveSyncSettingsState = {
+  enabled: false,
+  deviceId: '',
+  lastSyncedAt: null,
+  lastRemoteModifiedTime: null,
+  pendingSubjectTombstones: {},
+  pendingDocumentTombstones: {},
+  pendingCommentTombstones: {},
+  lastPageUpdatedAt: {},
+  bookmarkUpdatedAt: {},
 };
 
 const SettingsStoreKey = 'settings';
@@ -159,6 +186,10 @@ export function createInitialAppState(): AppState {
       sortMode: 'recent',
       copySettings: DefaultCopyPacketOptions,
       driveAuth: DefaultDriveAuthSettings,
+      driveSync: {
+        ...DefaultDriveSyncSettings,
+        deviceId: makeDeviceId(),
+      },
     },
     subjects: {},
     documents: {},
@@ -482,6 +513,29 @@ function timestampOr(value: unknown, fallback: number): number {
   return timestamp > 0 ? timestamp : fallback;
 }
 
+function nullableTimestamp(value: unknown): number | null {
+  const timestamp = finiteNumberOr(value, 0);
+  return timestamp > 0 ? timestamp : null;
+}
+
+function normalizeTimestampMap(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .flatMap(([key, rawTimestamp]) => {
+        const timestamp = nullableTimestamp(rawTimestamp);
+        return timestamp ? [[key, timestamp]] : [];
+      }),
+  );
+}
+
+function makeDeviceId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `device-${crypto.randomUUID()}`;
+  }
+  return `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function integerInRange(value: unknown, fallback: number, min: number, max: number): number {
   const boundedMax = Math.max(min, max);
   return Math.floor(clamp(finiteNumberOr(value, fallback), min, boundedMax));
@@ -623,12 +677,28 @@ function normalizeAppSettings(
     sortMode: normalizeSortMode(settings.sortMode),
     copySettings: normalizeCopySettings(isRecord(settings.copySettings) ? settings.copySettings : undefined),
     driveAuth: normalizeDriveAuthSettings(isRecord(settings.driveAuth) ? settings.driveAuth : undefined),
+    driveSync: normalizeDriveSyncSettings(isRecord(settings.driveSync) ? settings.driveSync : undefined),
   };
 }
 
 function normalizeDriveAuthSettings(rawDriveAuth: Record<string, unknown> | undefined): DriveAuthSettingsState {
   return {
     hasGrantedFileAccess: rawDriveAuth?.hasGrantedFileAccess === true,
+    hasGrantedAppDataAccess: rawDriveAuth?.hasGrantedAppDataAccess === true,
+  };
+}
+
+function normalizeDriveSyncSettings(rawDriveSync: Record<string, unknown> | undefined): DriveSyncSettingsState {
+  return {
+    enabled: rawDriveSync?.enabled === true,
+    deviceId: textOr(rawDriveSync?.deviceId, makeDeviceId()),
+    lastSyncedAt: nullableTimestamp(rawDriveSync?.lastSyncedAt),
+    lastRemoteModifiedTime: optionalText(rawDriveSync?.lastRemoteModifiedTime),
+    pendingSubjectTombstones: normalizeTimestampMap(rawDriveSync?.pendingSubjectTombstones),
+    pendingDocumentTombstones: normalizeTimestampMap(rawDriveSync?.pendingDocumentTombstones),
+    pendingCommentTombstones: normalizeTimestampMap(rawDriveSync?.pendingCommentTombstones),
+    lastPageUpdatedAt: normalizeTimestampMap(rawDriveSync?.lastPageUpdatedAt),
+    bookmarkUpdatedAt: normalizeTimestampMap(rawDriveSync?.bookmarkUpdatedAt),
   };
 }
 

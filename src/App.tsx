@@ -39,6 +39,8 @@ import {
   getDriveConfigStatus,
   pickDrivePdf,
   preloadDriveApis,
+  readDriveAppDataJsonFile,
+  saveDriveAppDataJsonFile,
   type DrivePdfFile,
 } from './drive';
 import {
@@ -70,6 +72,12 @@ import {
   type VisibleCopySettingKey,
   type ZoomMode,
 } from './storage';
+import {
+  DriveSyncFileName,
+  createDriveSyncEnvelope,
+  getDriveSyncFingerprint,
+  mergeDriveSyncEnvelope,
+} from './sync';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -105,6 +113,13 @@ type DialogState =
     danger?: boolean;
     onConfirm: () => void;
   };
+
+type SyncStatusKind = 'off' | 'idle' | 'syncing' | 'synced' | 'failed' | 'needs-auth';
+
+type SyncStatusState = {
+  kind: SyncStatusKind;
+  label: string;
+};
 
 type SubjectMenuPosition = {
   top: number;
@@ -166,6 +181,15 @@ function makeId(prefix: string): string {
 
 function formatDate(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(timestamp));
+}
+
+function formatTime(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(timestamp));
 }
 
 function formatBackupFileName(date = new Date()): string {
@@ -272,6 +296,27 @@ function driveImportMessage(error: unknown, fallback: string): string {
   }
   if (normalized.includes('could not read the selected drive pdf')) {
     return 'Could not read the selected Drive PDF. Choose the file again.';
+  }
+  return message;
+}
+
+function driveSyncMessage(error: unknown, fallback: string): string {
+  const message = errorMessage(error, fallback);
+  const normalized = message.toLowerCase();
+  if (normalized.includes('sign-in was closed') || normalized.includes('popup_closed')) {
+    return 'Google sign-in was closed. Sync was not changed.';
+  }
+  if (normalized.includes('could not read drive sync file')) {
+    return 'Could not read Drive sync data. Try Sync again.';
+  }
+  if (normalized.includes('could not download drive sync file')) {
+    return 'Could not download Drive sync data. Try Sync again.';
+  }
+  if (normalized.includes('could not save drive sync file')) {
+    return 'Could not save Drive sync data. Try Sync again.';
+  }
+  if (normalized.includes('google identity services could not be loaded')) {
+    return 'Could not load Google sign-in. Check the connection and try again.';
   }
   return message;
 }
@@ -468,16 +513,26 @@ function App() {
   const [pendingDriveImport, setPendingDriveImport] = useState<PendingDriveImport | null>(null);
   const [drivePickerOpen, setDrivePickerOpen] = useState(false);
   const [driveBusy, setDriveBusy] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusState>({ kind: 'off', label: 'Not connected' });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const pendingReconnectDocKeyRef = useRef<string | null>(null);
   const driveBusyRef = useRef(false);
+  const syncBusyRef = useRef(false);
+  const syncDebounceRef = useRef<number | null>(null);
+  const storedRef = useRef(stored);
+  const syncFingerprintRef = useRef('');
   const driveConfigStatus = useMemo(() => getDriveConfigStatus(), []);
 
   useEffect(() => {
     preloadDriveApis();
   }, []);
+
+  useEffect(() => {
+    storedRef.current = stored;
+  }, [stored]);
 
   useEffect(() => {
     const previousScrollRestoration = window.history.scrollRestoration;
@@ -490,7 +545,7 @@ function App() {
 
   const markDriveFileAccessGranted = useCallback(() => {
     setStored((prev) => (
-      prev.settings.driveAuth.hasGrantedFileAccess
+      prev.settings.driveAuth.hasGrantedFileAccess && prev.settings.driveAuth.hasGrantedAppDataAccess
         ? prev
         : {
           ...prev,
@@ -499,6 +554,7 @@ function App() {
             driveAuth: {
               ...prev.settings.driveAuth,
               hasGrantedFileAccess: true,
+              hasGrantedAppDataAccess: true,
             },
           },
         }
@@ -564,8 +620,136 @@ function App() {
   const currentPageBookmarked = docBookmarks.includes(pageIndex);
   const driveAuthOptions = useMemo<DriveAuthOptions>(() => ({
     hasGrantedFileAccess: stored.settings.driveAuth.hasGrantedFileAccess,
+    hasGrantedAppDataAccess: stored.settings.driveAuth.hasGrantedAppDataAccess,
     onTokenGranted: markDriveFileAccessGranted,
-  }), [markDriveFileAccessGranted, stored.settings.driveAuth.hasGrantedFileAccess]);
+  }), [markDriveFileAccessGranted, stored.settings.driveAuth.hasGrantedAppDataAccess, stored.settings.driveAuth.hasGrantedFileAccess]);
+
+  const runDriveSync = useCallback(async ({
+    userInitiated = false,
+    enable = false,
+  }: { userInitiated?: boolean; enable?: boolean } = {}) => {
+    if (syncBusyRef.current) {
+      if (userInitiated) setStatusText('Drive sync is already running.');
+      return;
+    }
+    if (!driveConfigStatus.configured) {
+      const message = `Drive sync is not configured for this build: ${driveConfigStatus.missing.join(', ')}.`;
+      setSyncStatus({ kind: 'failed', label: 'Config missing' });
+      setStatusText(message);
+      return;
+    }
+
+    syncBusyRef.current = true;
+    setSyncBusy(true);
+    setSyncStatus({ kind: 'syncing', label: 'Syncing...' });
+    setStatusText(userInitiated ? 'Syncing with Google Drive...' : 'Auto-syncing with Google Drive...');
+
+    try {
+      const baseState = storedRef.current;
+      const stateForSync: AppState = enable || !baseState.settings.driveSync.enabled
+        ? {
+          ...baseState,
+          settings: {
+            ...baseState.settings,
+            driveSync: {
+              ...baseState.settings.driveSync,
+              enabled: true,
+            },
+          },
+        }
+        : baseState;
+      const authOptions: DriveAuthOptions = {
+        ...driveAuthOptions,
+        hasGrantedFileAccess: stateForSync.settings.driveAuth.hasGrantedFileAccess,
+        hasGrantedAppDataAccess: stateForSync.settings.driveAuth.hasGrantedAppDataAccess,
+        forceConsent: userInitiated && !stateForSync.settings.driveAuth.hasGrantedAppDataAccess,
+      };
+      const remoteFile = await readDriveAppDataJsonFile(DriveSyncFileName, authOptions);
+      const merged = mergeDriveSyncEnvelope(stateForSync, remoteFile?.data ?? null);
+      const saved = await saveDriveAppDataJsonFile(
+        DriveSyncFileName,
+        createDriveSyncEnvelope(merged),
+        authOptions,
+        remoteFile?.id,
+      );
+      const syncedAt = Date.now();
+      const finalState: AppState = {
+        ...merged,
+        settings: {
+          ...merged.settings,
+          driveAuth: {
+            ...merged.settings.driveAuth,
+            hasGrantedFileAccess: true,
+            hasGrantedAppDataAccess: true,
+          },
+          driveSync: {
+            ...merged.settings.driveSync,
+            enabled: true,
+            lastSyncedAt: syncedAt,
+            lastRemoteModifiedTime: saved.modifiedTime ?? remoteFile?.modifiedTime ?? null,
+          },
+        },
+      };
+      storedRef.current = finalState;
+      syncFingerprintRef.current = getDriveSyncFingerprint(finalState);
+      setStored(finalState);
+      setSyncStatus({ kind: 'synced', label: 'Synced' });
+      setStatusText('Drive sync complete.');
+    } catch (error) {
+      const message = driveSyncMessage(error, 'Could not sync with Google Drive.');
+      const needsAuth = message.toLowerCase().includes('sign-in') || message.toLowerCase().includes('access');
+      setSyncStatus({ kind: needsAuth ? 'needs-auth' : 'failed', label: needsAuth ? 'Google access needed' : 'Sync failed' });
+      setStatusText(message);
+    } finally {
+      syncBusyRef.current = false;
+      setSyncBusy(false);
+    }
+  }, [driveAuthOptions, driveConfigStatus.configured, driveConfigStatus.missing]);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    syncFingerprintRef.current = getDriveSyncFingerprint(stored);
+    setSyncStatus(stored.settings.driveSync.enabled
+      ? {
+        kind: stored.settings.driveSync.lastSyncedAt ? 'synced' : 'idle',
+        label: stored.settings.driveSync.lastSyncedAt ? 'Synced' : 'Ready to sync',
+      }
+      : { kind: 'off', label: 'Not connected' });
+  }, [storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || !stored.settings.driveSync.enabled || !driveConfigStatus.configured) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      void runDriveSync();
+    }, 1200);
+    return () => window.clearTimeout(timeoutId);
+  }, [driveConfigStatus.configured, runDriveSync, storageReady, stored.settings.driveSync.enabled]);
+
+  useEffect(() => {
+    if (!storageReady || !stored.settings.driveSync.enabled || syncBusyRef.current) return undefined;
+    const fingerprint = getDriveSyncFingerprint(stored);
+    if (!syncFingerprintRef.current) {
+      syncFingerprintRef.current = fingerprint;
+      return undefined;
+    }
+    if (fingerprint === syncFingerprintRef.current) return undefined;
+
+    if (syncDebounceRef.current) {
+      window.clearTimeout(syncDebounceRef.current);
+    }
+    setSyncStatus({ kind: 'idle', label: 'Sync pending' });
+    syncDebounceRef.current = window.setTimeout(() => {
+      syncDebounceRef.current = null;
+      void runDriveSync();
+    }, 2500);
+
+    return () => {
+      if (syncDebounceRef.current) {
+        window.clearTimeout(syncDebounceRef.current);
+        syncDebounceRef.current = null;
+      }
+    };
+  }, [runDriveSync, storageReady, stored]);
 
   const visibleDocs = useMemo(() => {
     const docs = getAllStoredDocuments(stored)
@@ -589,18 +773,29 @@ function App() {
     setStored((prev) => {
       const readerState = prev.readerStates[docKey];
       const documentMeta = prev.documents[docKey];
+      const source = prev.documentSources[docKey];
       if (!readerState || !documentMeta) return prev;
+      const now = Date.now();
       return {
         ...prev,
         settings: {
           ...prev.settings,
           selectedDocKey: docKey,
+          driveSync: source?.sourceKind === 'drive'
+            ? {
+              ...prev.settings.driveSync,
+              lastPageUpdatedAt: {
+                ...prev.settings.driveSync.lastPageUpdatedAt,
+                [docKey]: now,
+              },
+            }
+            : prev.settings.driveSync,
         },
         documents: {
           ...prev.documents,
           [docKey]: {
             ...documentMeta,
-            updatedAt: Date.now(),
+            updatedAt: now,
           },
         },
         readerStates: {
@@ -1090,11 +1285,12 @@ function App() {
       danger: true,
       onConfirm: () => {
         setStored((prev) => {
+          const now = Date.now();
           const { [subject.id]: _removed, ...subjects } = prev.subjects;
           const documents = Object.fromEntries(
             Object.entries(prev.documents).map(([key, doc]) => [
               key,
-              doc.subjectId === subject.id ? { ...doc, subjectId: null } : doc,
+              doc.subjectId === subject.id ? { ...doc, subjectId: null, updatedAt: now } : doc,
             ]),
           );
           return {
@@ -1102,6 +1298,13 @@ function App() {
             settings: {
               ...prev.settings,
               selectedSubjectId: prev.settings.selectedSubjectId === subject.id ? null : prev.settings.selectedSubjectId,
+              driveSync: {
+                ...prev.settings.driveSync,
+                pendingSubjectTombstones: {
+                  ...prev.settings.driveSync.pendingSubjectTombstones,
+                  [subject.id]: now,
+                },
+              },
             },
             subjects,
             documents,
@@ -1163,6 +1366,7 @@ function App() {
       danger: true,
       onConfirm: () => {
         setStored((prev) => {
+          const now = Date.now();
           const { [doc.key]: _removedDoc, ...documents } = prev.documents;
           const { [doc.key]: _removedSource, ...documentSources } = prev.documentSources;
           const { [doc.key]: _removedReaderState, ...readerStates } = prev.readerStates;
@@ -1172,6 +1376,15 @@ function App() {
             settings: {
               ...prev.settings,
               selectedDocKey: prev.settings.selectedDocKey === doc.key ? null : prev.settings.selectedDocKey,
+              driveSync: doc.sourceKind === 'drive'
+                ? {
+                  ...prev.settings.driveSync,
+                  pendingDocumentTombstones: {
+                    ...prev.settings.driveSync.pendingDocumentTombstones,
+                    [doc.key]: now,
+                  },
+                }
+                : prev.settings.driveSync,
             },
             documents,
             documentSources,
@@ -1220,8 +1433,22 @@ function App() {
       const next = existing.includes(pageIndex)
         ? existing.filter((page) => page !== pageIndex)
         : [...existing, pageIndex].sort((a, b) => a - b);
+      const source = prev.documentSources[docKey];
+      const now = Date.now();
       return {
         ...prev,
+        settings: {
+          ...prev.settings,
+          driveSync: source?.sourceKind === 'drive'
+            ? {
+              ...prev.settings.driveSync,
+              bookmarkUpdatedAt: {
+                ...prev.settings.driveSync.bookmarkUpdatedAt,
+                [docKey]: now,
+              },
+            }
+            : prev.settings.driveSync,
+        },
         studyData: {
           ...prev.studyData,
           bookmarks: {
@@ -1296,13 +1523,30 @@ function App() {
       confirmLabel: 'Delete comment',
       danger: true,
       onConfirm: () => {
-        setStored((prev) => ({
-          ...prev,
-          studyData: {
-            ...prev.studyData,
-            comments: prev.studyData.comments.filter((comment) => comment.id !== commentId),
-          },
-        }));
+        setStored((prev) => {
+          const target = prev.studyData.comments.find((comment) => comment.id === commentId);
+          const source = target ? prev.documentSources[target.docKey] : null;
+          const now = Date.now();
+          return {
+            ...prev,
+            settings: {
+              ...prev.settings,
+              driveSync: source?.sourceKind === 'drive'
+                ? {
+                  ...prev.settings.driveSync,
+                  pendingCommentTombstones: {
+                    ...prev.settings.driveSync.pendingCommentTombstones,
+                    [commentId]: now,
+                  },
+                }
+                : prev.settings.driveSync,
+            },
+            studyData: {
+              ...prev.studyData,
+              comments: prev.studyData.comments.filter((comment) => comment.id !== commentId),
+            },
+          };
+        });
         if (editingCommentId === commentId) {
           setEditingCommentId(null);
           setCommentDraft('');
@@ -1471,7 +1715,13 @@ function App() {
       {settingsOpen && (
         <SettingsDialog
           copySettings={stored.settings.copySettings}
+          syncEnabled={stored.settings.driveSync.enabled}
+          syncBusy={syncBusy}
+          syncStatus={syncStatus}
+          lastSyncedAt={stored.settings.driveSync.lastSyncedAt}
           onToggleCopySetting={updateCopySetting}
+          onConnectSync={() => void runDriveSync({ userInitiated: true, enable: true })}
+          onSyncNow={() => void runDriveSync({ userInitiated: true })}
           onExportBackup={exportBackup}
           onImportBackup={() => backupInputRef.current?.click()}
           onClose={() => setSettingsOpen(false)}
@@ -2562,13 +2812,25 @@ function DriveImportDialog({
 
 function SettingsDialog({
   copySettings,
+  syncEnabled,
+  syncBusy,
+  syncStatus,
+  lastSyncedAt,
   onToggleCopySetting,
+  onConnectSync,
+  onSyncNow,
   onExportBackup,
   onImportBackup,
   onClose,
 }: {
   copySettings: CopyPacketOptions;
+  syncEnabled: boolean;
+  syncBusy: boolean;
+  syncStatus: SyncStatusState;
+  lastSyncedAt: number | null;
   onToggleCopySetting: (key: VisibleCopySettingKey, value: boolean) => void;
+  onConnectSync: () => void;
+  onSyncNow: () => void;
   onExportBackup: () => void;
   onImportBackup: () => void;
   onClose: () => void;
@@ -2618,6 +2880,24 @@ function SettingsDialog({
                 onChange={(event) => onToggleCopySetting('includeComments', event.target.checked)}
               />
             </label>
+          </div>
+        </div>
+        <div className="settings-section">
+          <div className="settings-section-title">Drive sync</div>
+          <div className={`sync-status-card ${syncStatus.kind}`}>
+            <span>{syncStatus.label}</span>
+            <strong>{lastSyncedAt ? `Last sync ${formatTime(lastSyncedAt)}` : 'No sync yet'}</strong>
+          </div>
+          <div className="settings-actions">
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={syncEnabled ? onSyncNow : onConnectSync}
+              disabled={syncBusy}
+            >
+              <Cloud size={16} />
+              {syncBusy ? 'Syncing...' : syncEnabled ? 'Sync now' : 'Connect'}
+            </button>
           </div>
         </div>
         <div className="settings-section">
