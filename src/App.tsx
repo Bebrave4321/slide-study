@@ -1225,7 +1225,7 @@ function App() {
     setDialog({
       type: 'confirm',
       title: 'Disconnect Drive sync?',
-      description: 'Automatic sync will stop on this browser. Your local Library data and the hidden Drive sync file will stay as they are.',
+      description: 'Sync will stop only on this browser. Local Library data stays here, and the hidden Drive sync data is not deleted.',
       confirmLabel: 'Disconnect',
       onConfirm: () => {
         syncSessionReadyRef.current = false;
@@ -1253,7 +1253,7 @@ function App() {
     setDialog({
       type: 'confirm',
       title: 'Reset remote sync data?',
-      description: 'This overwrites the hidden Drive sync file with the current Library data from this browser. PDF files are not uploaded.',
+      description: 'This replaces the hidden Drive sync data with this browser data. Other devices may receive this version next time they sync. PDF files are not uploaded or deleted.',
       confirmLabel: 'Reset remote',
       danger: true,
       onConfirm: () => {
@@ -1272,9 +1272,9 @@ function App() {
       link.download = formatBackupFileName();
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      setStatusText('Backup exported. PDF files are not included.');
+      setStatusText('Local backup exported. PDF files are not included.');
     } catch {
-      setStatusText('Could not export backup.');
+      setStatusText('Could not export local backup.');
     }
   }, [stored]);
 
@@ -1288,9 +1288,9 @@ function App() {
 
       setDialog({
         type: 'confirm',
-        title: 'Restore backup?',
-        description: `This will replace current Library data with ${pdfCount} PDFs, ${commentCount} comments, and ${bookmarkCount} bookmarked pages. PDF files are not included.`,
-        confirmLabel: 'Restore backup',
+        title: 'Import local backup?',
+        description: `This will replace current browser data with ${pdfCount} PDFs, ${commentCount} comments, and ${bookmarkCount} bookmarked pages. PDF files are not included.`,
+        confirmLabel: 'Import backup',
         danger: true,
         onConfirm: () => {
           if (runtimePdf) {
@@ -1299,11 +1299,11 @@ function App() {
           setRuntimePdf(null);
           setScreen('library');
           setStored(restored);
-          setStatusText(`Restored backup with ${pdfCount} PDFs. Reopen local PDF files to render them.`);
+          setStatusText(`Imported local backup with ${pdfCount} PDFs. Reopen local PDF files to render them.`);
         },
       });
     } catch (error) {
-      setStatusText(error instanceof Error ? error.message : 'Could not import backup.');
+      setStatusText(error instanceof Error ? error.message : 'Could not import local backup.');
     }
   }, [runtimePdf]);
 
@@ -2985,35 +2985,51 @@ function SettingsDialog({
               <Cloud size={16} />
               {syncBusy ? 'Syncing...' : syncEnabled ? 'Sync now' : 'Connect'}
             </button>
-            <button type="button" className="ghost-btn" onClick={onExportSyncData}>
-              <Download size={16} />
-              Export sync
-            </button>
             {syncEnabled && (
-              <>
-                <button type="button" className="ghost-btn" onClick={onDisconnectSync} disabled={syncBusy}>
-                  <Power size={16} />
-                  Disconnect
-                </button>
-                <button type="button" className="ghost-btn danger" onClick={onResetRemoteSync} disabled={syncBusy}>
-                  <RefreshCcw size={16} />
-                  Reset remote
-                </button>
-              </>
+              <button type="button" className="ghost-btn" onClick={onDisconnectSync} disabled={syncBusy}>
+                <Power size={16} />
+                Disconnect
+              </button>
             )}
           </div>
         </div>
         <div className="settings-section">
-          <div className="settings-section-title">Backup</div>
-          <div className="settings-actions">
-            <button type="button" className="ghost-btn" onClick={onExportBackup}>
-              <Download size={16} />
-              Export
-            </button>
-            <button type="button" className="ghost-btn" onClick={onImportBackup}>
-              <Upload size={16} />
-              Import
-            </button>
+          <div className="settings-section-title">Data management</div>
+          <div className="data-management-list">
+            <div className="data-management-group">
+              <div className="data-management-copy">
+                <strong>Sync data</strong>
+                <span>Drive-linked study data</span>
+              </div>
+              <div className="settings-actions">
+                <button type="button" className="ghost-btn" onClick={onExportSyncData}>
+                  <Download size={16} />
+                  Export sync data
+                </button>
+                {syncEnabled && (
+                  <button type="button" className="ghost-btn danger" onClick={onResetRemoteSync} disabled={syncBusy}>
+                    <RefreshCcw size={16} />
+                    Reset remote
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="data-management-group">
+              <div className="data-management-copy">
+                <strong>Local backup</strong>
+                <span>This browser data snapshot</span>
+              </div>
+              <div className="settings-actions">
+                <button type="button" className="ghost-btn" onClick={onExportBackup}>
+                  <Download size={16} />
+                  Export local backup
+                </button>
+                <button type="button" className="ghost-btn" onClick={onImportBackup}>
+                  <Upload size={16} />
+                  Import local backup
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <div className="dialog-actions">

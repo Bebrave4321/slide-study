@@ -1153,7 +1153,7 @@ body.drive-picker-open {
 }
 
 .settings-dialog {
-  width: min(420px, 100%);
+  width: min(480px, 100%);
 }
 
 .drive-import-dialog {
@@ -1211,14 +1211,51 @@ body.drive-picker-open {
 
 .settings-actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
   gap: 8px;
 }
 
 .settings-actions .ghost-btn {
   width: 100%;
+  height: auto;
+  min-height: 34px;
+  padding-block: 8px;
+  line-height: 1.2;
+  white-space: normal;
   border-color: var(--border);
   background: var(--surface-raised);
+}
+
+.data-management-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.data-management-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+  background: var(--surface-raised);
+}
+
+.data-management-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.data-management-copy strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.data-management-copy span {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .setting-row {
