@@ -297,13 +297,19 @@ export async function readDriveAppDataJsonFile(
     handleAuthFailure(mediaResponse.status);
     throw new Error(`Could not download Drive sync file (${mediaResponse.status}).`);
   }
+  let data: unknown = null;
+  try {
+    data = await mediaResponse.json() as unknown;
+  } catch {
+    data = null;
+  }
 
   return {
     id,
     name,
     modifiedTime: textOrNull(first.modifiedTime),
     size: numberFromText(first.size),
-    data: await mediaResponse.json() as unknown,
+    data,
   };
 }
 

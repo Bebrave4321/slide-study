@@ -18,9 +18,11 @@ import {
   MessageSquare,
   Moon,
   MoreHorizontal,
+  Power,
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  RefreshCcw,
   Search,
   Settings,
   StretchHorizontal,
@@ -77,6 +79,7 @@ import {
   createDriveSyncEnvelope,
   getDriveSyncFingerprint,
   mergeDriveSyncEnvelope,
+  parseDriveSyncEnvelope,
 } from './sync';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -114,7 +117,7 @@ type DialogState =
     onConfirm: () => void;
   };
 
-type SyncStatusKind = 'off' | 'idle' | 'syncing' | 'synced' | 'failed' | 'needs-auth';
+type SyncStatusKind = 'off' | 'paused' | 'idle' | 'syncing' | 'synced' | 'failed';
 
 type SyncStatusState = {
   kind: SyncStatusKind;
@@ -304,7 +307,7 @@ function driveSyncMessage(error: unknown, fallback: string): string {
   const message = errorMessage(error, fallback);
   const normalized = message.toLowerCase();
   if (normalized.includes('sign-in was closed') || normalized.includes('popup_closed')) {
-    return 'Google sign-in was closed. Sync was not changed.';
+    return 'Sync paused. Click Sync now to reconnect.';
   }
   if (normalized.includes('could not read drive sync file')) {
     return 'Could not read Drive sync data. Try Sync again.';
@@ -315,10 +318,27 @@ function driveSyncMessage(error: unknown, fallback: string): string {
   if (normalized.includes('could not save drive sync file')) {
     return 'Could not save Drive sync data. Try Sync again.';
   }
+  if (normalized.includes('not a supported slide study sync file')) {
+    return 'Drive sync data could not be read. You can use Reset remote sync to replace it with this browser data.';
+  }
   if (normalized.includes('google identity services could not be loaded')) {
     return 'Could not load Google sign-in. Check the connection and try again.';
   }
   return message;
+}
+
+function syncStatusDetail(status: SyncStatusState, lastSyncedAt: number | null): string {
+  if (status.kind === 'paused') {
+    return lastSyncedAt
+      ? `Click Sync now to reconnect. Last sync ${formatTime(lastSyncedAt)}`
+      : 'Click Sync now to connect.';
+  }
+  if (status.kind === 'off') return 'Drive sync is off.';
+  if (status.kind === 'syncing') return 'Working with Google Drive...';
+  if (status.kind === 'failed') return lastSyncedAt
+    ? `Last sync ${formatTime(lastSyncedAt)}`
+    : 'No sync completed yet.';
+  return lastSyncedAt ? `Last sync ${formatTime(lastSyncedAt)}` : 'No sync yet';
 }
 
 function resetWindowScroll(): void {
@@ -521,6 +541,7 @@ function App() {
   const pendingReconnectDocKeyRef = useRef<string | null>(null);
   const driveBusyRef = useRef(false);
   const syncBusyRef = useRef(false);
+  const syncSessionReadyRef = useRef(false);
   const syncDebounceRef = useRef<number | null>(null);
   const storedRef = useRef(stored);
   const syncFingerprintRef = useRef('');
@@ -627,7 +648,8 @@ function App() {
   const runDriveSync = useCallback(async ({
     userInitiated = false,
     enable = false,
-  }: { userInitiated?: boolean; enable?: boolean } = {}) => {
+    resetRemote = false,
+  }: { userInitiated?: boolean; enable?: boolean; resetRemote?: boolean } = {}) => {
     if (syncBusyRef.current) {
       if (userInitiated) setStatusText('Drive sync is already running.');
       return;
@@ -665,7 +687,12 @@ function App() {
         forceConsent: userInitiated && !stateForSync.settings.driveAuth.hasGrantedAppDataAccess,
       };
       const remoteFile = await readDriveAppDataJsonFile(DriveSyncFileName, authOptions);
-      const merged = mergeDriveSyncEnvelope(stateForSync, remoteFile?.data ?? null);
+      if (remoteFile && !resetRemote && !parseDriveSyncEnvelope(remoteFile.data)) {
+        throw new Error('Drive sync file is not a supported Slide Study sync file. Use Reset remote sync to replace it.');
+      }
+      const merged = resetRemote
+        ? stateForSync
+        : mergeDriveSyncEnvelope(stateForSync, remoteFile?.data ?? null);
       const saved = await saveDriveAppDataJsonFile(
         DriveSyncFileName,
         createDriveSyncEnvelope(merged),
@@ -692,13 +719,15 @@ function App() {
       };
       storedRef.current = finalState;
       syncFingerprintRef.current = getDriveSyncFingerprint(finalState);
+      syncSessionReadyRef.current = true;
       setStored(finalState);
       setSyncStatus({ kind: 'synced', label: 'Synced' });
-      setStatusText('Drive sync complete.');
+      setStatusText(resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
     } catch (error) {
       const message = driveSyncMessage(error, 'Could not sync with Google Drive.');
-      const needsAuth = message.toLowerCase().includes('sign-in') || message.toLowerCase().includes('access');
-      setSyncStatus({ kind: needsAuth ? 'needs-auth' : 'failed', label: needsAuth ? 'Google access needed' : 'Sync failed' });
+      const paused = message.toLowerCase().includes('sign-in') || message.toLowerCase().includes('access');
+      syncSessionReadyRef.current = false;
+      setSyncStatus({ kind: paused ? 'paused' : 'failed', label: paused ? 'Sync paused' : 'Sync failed' });
       setStatusText(message);
     } finally {
       syncBusyRef.current = false;
@@ -711,22 +740,14 @@ function App() {
     syncFingerprintRef.current = getDriveSyncFingerprint(stored);
     setSyncStatus(stored.settings.driveSync.enabled
       ? {
-        kind: stored.settings.driveSync.lastSyncedAt ? 'synced' : 'idle',
-        label: stored.settings.driveSync.lastSyncedAt ? 'Synced' : 'Ready to sync',
+        kind: 'paused',
+        label: stored.settings.driveSync.lastSyncedAt ? 'Sync paused' : 'Ready to sync',
       }
       : { kind: 'off', label: 'Not connected' });
   }, [storageReady]);
 
   useEffect(() => {
-    if (!storageReady || !stored.settings.driveSync.enabled || !driveConfigStatus.configured) return undefined;
-    const timeoutId = window.setTimeout(() => {
-      void runDriveSync();
-    }, 1200);
-    return () => window.clearTimeout(timeoutId);
-  }, [driveConfigStatus.configured, runDriveSync, storageReady, stored.settings.driveSync.enabled]);
-
-  useEffect(() => {
-    if (!storageReady || !stored.settings.driveSync.enabled || syncBusyRef.current) return undefined;
+    if (!storageReady || !stored.settings.driveSync.enabled || !syncSessionReadyRef.current || syncBusyRef.current) return undefined;
     const fingerprint = getDriveSyncFingerprint(stored);
     if (!syncFingerprintRef.current) {
       syncFingerprintRef.current = fingerprint;
@@ -1183,6 +1204,63 @@ function App() {
       },
     }));
   }, []);
+
+  const exportSyncData = useCallback(() => {
+    try {
+      const syncEnvelope = createDriveSyncEnvelope(stored);
+      const blob = new Blob([JSON.stringify(syncEnvelope, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `slide-study-sync-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatusText('Sync data exported. PDF files are not included.');
+    } catch {
+      setStatusText('Could not export sync data.');
+    }
+  }, [stored]);
+
+  const disconnectSync = useCallback(() => {
+    setDialog({
+      type: 'confirm',
+      title: 'Disconnect Drive sync?',
+      description: 'Automatic sync will stop on this browser. Your local Library data and the hidden Drive sync file will stay as they are.',
+      confirmLabel: 'Disconnect',
+      onConfirm: () => {
+        syncSessionReadyRef.current = false;
+        if (syncDebounceRef.current) {
+          window.clearTimeout(syncDebounceRef.current);
+          syncDebounceRef.current = null;
+        }
+        setStored((prev) => ({
+          ...prev,
+          settings: {
+            ...prev.settings,
+            driveSync: {
+              ...prev.settings.driveSync,
+              enabled: false,
+            },
+          },
+        }));
+        setSyncStatus({ kind: 'off', label: 'Not connected' });
+        setStatusText('Drive sync disconnected on this browser.');
+      },
+    });
+  }, []);
+
+  const resetRemoteSync = useCallback(() => {
+    setDialog({
+      type: 'confirm',
+      title: 'Reset remote sync data?',
+      description: 'This overwrites the hidden Drive sync file with the current Library data from this browser. PDF files are not uploaded.',
+      confirmLabel: 'Reset remote',
+      danger: true,
+      onConfirm: () => {
+        void runDriveSync({ userInitiated: true, enable: true, resetRemote: true });
+      },
+    });
+  }, [runDriveSync]);
 
   const exportBackup = useCallback(() => {
     try {
@@ -1722,6 +1800,9 @@ function App() {
           onToggleCopySetting={updateCopySetting}
           onConnectSync={() => void runDriveSync({ userInitiated: true, enable: true })}
           onSyncNow={() => void runDriveSync({ userInitiated: true })}
+          onExportSyncData={exportSyncData}
+          onDisconnectSync={disconnectSync}
+          onResetRemoteSync={resetRemoteSync}
           onExportBackup={exportBackup}
           onImportBackup={() => backupInputRef.current?.click()}
           onClose={() => setSettingsOpen(false)}
@@ -2819,6 +2900,9 @@ function SettingsDialog({
   onToggleCopySetting,
   onConnectSync,
   onSyncNow,
+  onExportSyncData,
+  onDisconnectSync,
+  onResetRemoteSync,
   onExportBackup,
   onImportBackup,
   onClose,
@@ -2831,6 +2915,9 @@ function SettingsDialog({
   onToggleCopySetting: (key: VisibleCopySettingKey, value: boolean) => void;
   onConnectSync: () => void;
   onSyncNow: () => void;
+  onExportSyncData: () => void;
+  onDisconnectSync: () => void;
+  onResetRemoteSync: () => void;
   onExportBackup: () => void;
   onImportBackup: () => void;
   onClose: () => void;
@@ -2886,7 +2973,7 @@ function SettingsDialog({
           <div className="settings-section-title">Drive sync</div>
           <div className={`sync-status-card ${syncStatus.kind}`}>
             <span>{syncStatus.label}</span>
-            <strong>{lastSyncedAt ? `Last sync ${formatTime(lastSyncedAt)}` : 'No sync yet'}</strong>
+            <strong>{syncStatusDetail(syncStatus, lastSyncedAt)}</strong>
           </div>
           <div className="settings-actions">
             <button
@@ -2898,6 +2985,22 @@ function SettingsDialog({
               <Cloud size={16} />
               {syncBusy ? 'Syncing...' : syncEnabled ? 'Sync now' : 'Connect'}
             </button>
+            <button type="button" className="ghost-btn" onClick={onExportSyncData}>
+              <Download size={16} />
+              Export sync
+            </button>
+            {syncEnabled && (
+              <>
+                <button type="button" className="ghost-btn" onClick={onDisconnectSync} disabled={syncBusy}>
+                  <Power size={16} />
+                  Disconnect
+                </button>
+                <button type="button" className="ghost-btn danger" onClick={onResetRemoteSync} disabled={syncBusy}>
+                  <RefreshCcw size={16} />
+                  Reset remote
+                </button>
+              </>
+            )}
           </div>
         </div>
         <div className="settings-section">

@@ -108,6 +108,10 @@ export function mergeDriveSyncEnvelope(
   return normalizeAppState(nextState, now);
 }
 
+export function parseDriveSyncEnvelope(raw: unknown): DriveSyncEnvelope | null {
+  return normalizeDriveSyncEnvelope(raw);
+}
+
 function createDriveSyncPayload(state: AppState, now: number): DriveSyncPayload {
   const driveDocKeys = getDriveDocKeys(state);
   const driveDocKeySet = new Set(driveDocKeys);

@@ -1285,8 +1285,11 @@ body.drive-picker-open {
   border-color: var(--accent);
 }
 
-.sync-status-card.failed,
-.sync-status-card.needs-auth {
+.sync-status-card.paused {
+  border-color: var(--border-strong);
+}
+
+.sync-status-card.failed {
   border-color: color-mix(in srgb, var(--danger) 70%, var(--border) 30%);
 }
 
