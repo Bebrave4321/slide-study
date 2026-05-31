@@ -542,6 +542,7 @@ function App() {
   const driveBusyRef = useRef(false);
   const syncBusyRef = useRef(false);
   const syncSessionReadyRef = useRef(false);
+  const silentReconnectAttemptedRef = useRef(false);
   const syncDebounceRef = useRef<number | null>(null);
   const storedRef = useRef(stored);
   const syncFingerprintRef = useRef('');
@@ -649,22 +650,27 @@ function App() {
     userInitiated = false,
     enable = false,
     resetRemote = false,
-  }: { userInitiated?: boolean; enable?: boolean; resetRemote?: boolean } = {}) => {
+    silent = false,
+  }: { userInitiated?: boolean; enable?: boolean; resetRemote?: boolean; silent?: boolean } = {}) => {
     if (syncBusyRef.current) {
       if (userInitiated) setStatusText('Drive sync is already running.');
       return;
     }
     if (!driveConfigStatus.configured) {
       const message = `Drive sync is not configured for this build: ${driveConfigStatus.missing.join(', ')}.`;
-      setSyncStatus({ kind: 'failed', label: 'Config missing' });
-      setStatusText(message);
+      if (!silent) {
+        setSyncStatus({ kind: 'failed', label: 'Config missing' });
+        setStatusText(message);
+      }
       return;
     }
 
     syncBusyRef.current = true;
     setSyncBusy(true);
-    setSyncStatus({ kind: 'syncing', label: 'Syncing...' });
-    setStatusText(userInitiated ? 'Syncing with Google Drive...' : 'Auto-syncing with Google Drive...');
+    setSyncStatus({ kind: 'syncing', label: silent ? 'Reconnecting...' : 'Syncing...' });
+    if (!silent) {
+      setStatusText(userInitiated ? 'Syncing with Google Drive...' : 'Auto-syncing with Google Drive...');
+    }
 
     try {
       const baseState = storedRef.current;
@@ -722,13 +728,17 @@ function App() {
       syncSessionReadyRef.current = true;
       setStored(finalState);
       setSyncStatus({ kind: 'synced', label: 'Synced' });
-      setStatusText(resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
+      if (!silent) {
+        setStatusText(resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
+      }
     } catch (error) {
       const message = driveSyncMessage(error, 'Could not sync with Google Drive.');
       const paused = message.toLowerCase().includes('sign-in') || message.toLowerCase().includes('access');
       syncSessionReadyRef.current = false;
       setSyncStatus({ kind: paused ? 'paused' : 'failed', label: paused ? 'Sync paused' : 'Sync failed' });
-      setStatusText(message);
+      if (!silent) {
+        setStatusText(message);
+      }
     } finally {
       syncBusyRef.current = false;
       setSyncBusy(false);
@@ -745,6 +755,23 @@ function App() {
       }
       : { kind: 'off', label: 'Not connected' });
   }, [storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || silentReconnectAttemptedRef.current || !driveConfigStatus.configured) return undefined;
+    const state = storedRef.current;
+    if (
+      !state.settings.driveSync.enabled
+      || !state.settings.driveAuth.hasGrantedFileAccess
+      || !state.settings.driveAuth.hasGrantedAppDataAccess
+    ) {
+      return undefined;
+    }
+    silentReconnectAttemptedRef.current = true;
+    const timeoutId = window.setTimeout(() => {
+      void runDriveSync({ silent: true });
+    }, 800);
+    return () => window.clearTimeout(timeoutId);
+  }, [driveConfigStatus.configured, runDriveSync, storageReady]);
 
   useEffect(() => {
     if (!storageReady || !stored.settings.driveSync.enabled || !syncSessionReadyRef.current || syncBusyRef.current) return undefined;
@@ -2922,6 +2949,8 @@ function SettingsDialog({
   onImportBackup: () => void;
   onClose: () => void;
 }) {
+  const [dataManagementOpen, setDataManagementOpen] = useState(false);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
@@ -2945,28 +2974,34 @@ function SettingsDialog({
         <div className="settings-section">
           <div className="settings-section-title">Copy</div>
           <div className="settings-list">
-            <label className="setting-row">
+            <button
+              type="button"
+              className="setting-row setting-row-button"
+              aria-pressed={copySettings.includePageImage}
+              onClick={() => onToggleCopySetting('includePageImage', !copySettings.includePageImage)}
+            >
               <span>
                 <strong>Page image</strong>
                 <span>PDF page screenshot</span>
               </span>
-              <input
-                type="checkbox"
-                checked={copySettings.includePageImage}
-                onChange={(event) => onToggleCopySetting('includePageImage', event.target.checked)}
-              />
-            </label>
-            <label className="setting-row">
+              <span className={`setting-toggle ${copySettings.includePageImage ? 'on' : ''}`} aria-hidden="true">
+                <span />
+              </span>
+            </button>
+            <button
+              type="button"
+              className="setting-row setting-row-button"
+              aria-pressed={copySettings.includeComments}
+              onClick={() => onToggleCopySetting('includeComments', !copySettings.includeComments)}
+            >
               <span>
                 <strong>Comments</strong>
                 <span>Current page comments</span>
               </span>
-              <input
-                type="checkbox"
-                checked={copySettings.includeComments}
-                onChange={(event) => onToggleCopySetting('includeComments', event.target.checked)}
-              />
-            </label>
+              <span className={`setting-toggle ${copySettings.includeComments ? 'on' : ''}`} aria-hidden="true">
+                <span />
+              </span>
+            </button>
           </div>
         </div>
         <div className="settings-section">
@@ -2994,43 +3029,56 @@ function SettingsDialog({
           </div>
         </div>
         <div className="settings-section">
-          <div className="settings-section-title">Data management</div>
-          <div className="data-management-list">
-            <div className="data-management-group">
-              <div className="data-management-copy">
-                <strong>Sync data</strong>
-                <span>Drive-linked study data</span>
-              </div>
-              <div className="settings-actions">
-                <button type="button" className="ghost-btn" onClick={onExportSyncData}>
-                  <Download size={16} />
-                  Export sync data
-                </button>
-                {syncEnabled && (
-                  <button type="button" className="ghost-btn danger" onClick={onResetRemoteSync} disabled={syncBusy}>
-                    <RefreshCcw size={16} />
-                    Reset remote
+          <button
+            type="button"
+            className="settings-disclosure"
+            aria-expanded={dataManagementOpen}
+            onClick={() => setDataManagementOpen((open) => !open)}
+          >
+            <span>
+              <strong>Data management</strong>
+              <span>Backup and recovery tools</span>
+            </span>
+            <ChevronRight className={dataManagementOpen ? 'open' : ''} size={18} aria-hidden="true" />
+          </button>
+          {dataManagementOpen && (
+            <div className="data-management-list">
+              <div className="data-management-group">
+                <div className="data-management-copy">
+                  <strong>Sync data</strong>
+                  <span>Drive-linked study data used for device sync.</span>
+                </div>
+                <div className="settings-actions">
+                  <button type="button" className="ghost-btn" onClick={onExportSyncData}>
+                    <Download size={16} />
+                    Export sync data
                   </button>
-                )}
+                  {syncEnabled && (
+                    <button type="button" className="ghost-btn danger" onClick={onResetRemoteSync} disabled={syncBusy}>
+                      <RefreshCcw size={16} />
+                      Reset remote
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="data-management-group">
+                <div className="data-management-copy">
+                  <strong>Local backup</strong>
+                  <span>A manual snapshot of this browser's app data.</span>
+                </div>
+                <div className="settings-actions">
+                  <button type="button" className="ghost-btn" onClick={onExportBackup}>
+                    <Download size={16} />
+                    Export local backup
+                  </button>
+                  <button type="button" className="ghost-btn" onClick={onImportBackup}>
+                    <Upload size={16} />
+                    Import local backup
+                  </button>
+                </div>
               </div>
             </div>
-            <div className="data-management-group">
-              <div className="data-management-copy">
-                <strong>Local backup</strong>
-                <span>This browser data snapshot</span>
-              </div>
-              <div className="settings-actions">
-                <button type="button" className="ghost-btn" onClick={onExportBackup}>
-                  <Download size={16} />
-                  Export local backup
-                </button>
-                <button type="button" className="ghost-btn" onClick={onImportBackup}>
-                  <Upload size={16} />
-                  Import local backup
-                </button>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
         <div className="dialog-actions">
           <button type="button" className="ghost-btn" onClick={onClose}>Close</button>

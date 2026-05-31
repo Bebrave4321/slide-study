@@ -1258,6 +1258,55 @@ body.drive-picker-open {
   font-size: 12px;
 }
 
+.settings-disclosure {
+  min-height: 54px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: var(--surface-raised);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.settings-disclosure:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-soft);
+}
+
+.settings-disclosure > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-disclosure strong {
+  font-size: 14px;
+}
+
+.settings-disclosure span span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-disclosure svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  transition: transform 120ms ease, color 120ms ease;
+}
+
+.settings-disclosure svg.open {
+  color: var(--text);
+  transform: rotate(90deg);
+}
+
 .setting-row {
   min-height: 54px;
   display: flex;
@@ -1272,7 +1321,18 @@ body.drive-picker-open {
   cursor: pointer;
 }
 
-.setting-row > span {
+.setting-row-button {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+}
+
+.setting-row:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-soft);
+}
+
+.setting-row > span:first-child {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1283,15 +1343,41 @@ body.drive-picker-open {
   font-size: 14px;
 }
 
-.setting-row span span {
+.setting-row > span:first-child span {
   color: var(--text-muted);
   font-size: 12px;
 }
 
-.setting-row input {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent);
+.setting-toggle {
+  position: relative;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.setting-toggle span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.setting-toggle.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.setting-toggle.on span {
+  background: var(--accent);
+  transform: translateX(16px);
 }
 
 .sync-status-card {
