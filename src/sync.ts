@@ -27,6 +27,7 @@ type DriveSyncDocumentRecord = DocumentLibraryMetadata & {
 type DriveSyncBookmarkRecord = {
   pages: number[];
   updatedAt: number;
+  pageUpdatedAt: TimestampMap;
 };
 
 export type DriveSyncEnvelope = {
@@ -124,11 +125,13 @@ function createDriveSyncPayload(state: AppState, now: number): DriveSyncPayload 
   const bookmarks = Object.fromEntries(
     driveDocKeys.flatMap((docKey) => {
       const pages = state.studyData.bookmarks[docKey] ?? [];
-      const updatedAt = state.settings.driveSync.bookmarkUpdatedAt[docKey]
-        ?? state.documents[docKey]?.updatedAt
-        ?? now;
-      return pages.length > 0 || state.settings.driveSync.bookmarkUpdatedAt[docKey]
-        ? [[docKey, { pages, updatedAt }]]
+      const pageUpdatedAt = createBookmarkPageTimestampMap(state, docKey, pages, now);
+      const updatedAt = Math.max(
+        state.settings.driveSync.bookmarkUpdatedAt[docKey] ?? 0,
+        maxTimestamp(pageUpdatedAt),
+      );
+      return pages.length > 0 || updatedAt > 0
+        ? [[docKey, { pages, updatedAt, pageUpdatedAt }]]
         : [];
     }),
   );
@@ -157,6 +160,22 @@ function createDriveDocumentRecord(state: AppState, docKey: string, now: number)
     lastPageIndex: reader.lastPageIndex,
     lastPageUpdatedAt: state.settings.driveSync.lastPageUpdatedAt[docKey] ?? library.updatedAt ?? now,
   };
+}
+
+function createBookmarkPageTimestampMap(
+  state: AppState,
+  docKey: string,
+  pages: number[],
+  now: number,
+): TimestampMap {
+  const existing = state.settings.driveSync.bookmarkPageUpdatedAt[docKey] ?? {};
+  const fallback = state.settings.driveSync.bookmarkUpdatedAt[docKey] ?? state.documents[docKey]?.updatedAt ?? now;
+  const pageUpdatedAt = { ...existing };
+  pages.forEach((page) => {
+    const key = String(page);
+    pageUpdatedAt[key] = pageUpdatedAt[key] ?? fallback;
+  });
+  return pageUpdatedAt;
 }
 
 function mergeSubjects(
@@ -214,7 +233,7 @@ function mergeDocuments(
     const lastPageIndex = remoteLastPageUpdatedAt > localLastPageUpdatedAt
       ? remoteRecord?.lastPageIndex ?? 0
       : localRecord?.lastPageIndex ?? 0;
-    const lastPageUpdatedAt = Math.max(localLastPageUpdatedAt, remoteLastPageUpdatedAt, libraryRecord.updatedAt);
+    const lastPageUpdatedAt = Math.max(localLastPageUpdatedAt, remoteLastPageUpdatedAt);
     const existingReader = nextState.readerStates[docKey] ?? localState.readerStates[docKey];
 
     nextState.documents[docKey] = {
@@ -276,19 +295,54 @@ function mergeBookmarks(
     }
   });
 
-  const driveDocKeys = new Set([...getDriveDocKeys(nextState), ...Object.keys(remote.documents)]);
+  const driveDocKeys = new Set([
+    ...getDriveDocKeys(nextState),
+    ...Object.keys(remote.documents),
+    ...Object.keys(remote.bookmarks),
+  ]);
   driveDocKeys.forEach((docKey) => {
     if (documentTombstones[docKey]) return;
+    if (!nextState.documents[docKey] && !remote.documents[docKey]) return;
     const localPages = localState.studyData.bookmarks[docKey] ?? [];
-    const localUpdatedAt = localState.settings.driveSync.bookmarkUpdatedAt[docKey] ?? localState.documents[docKey]?.updatedAt ?? 0;
     const remoteBookmark = remote.bookmarks[docKey];
+    const localUpdatedAt = localState.settings.driveSync.bookmarkUpdatedAt[docKey] ?? localState.documents[docKey]?.updatedAt ?? 0;
+    const localPageUpdatedAt = createBookmarkPageTimestampMap(localState, docKey, localPages, localUpdatedAt);
+    const remotePages = remoteBookmark?.pages ?? [];
     const remoteUpdatedAt = remoteBookmark?.updatedAt ?? 0;
-    const pages = remoteUpdatedAt > localUpdatedAt
-      ? remoteBookmark?.pages ?? []
-      : localPages;
+    const remotePageUpdatedAt = remoteBookmark?.pageUpdatedAt ?? {};
+    const pageCount = nextState.documentSources[docKey]?.pageCount ?? remote.documents[docKey]?.source.pageCount ?? Number.MAX_SAFE_INTEGER;
+    const localPageSet = new Set(localPages);
+    const remotePageSet = new Set(remotePages);
+    const pageIndexes = new Set([
+      ...localPages,
+      ...remotePages,
+      ...Object.keys(localPageUpdatedAt).map(Number),
+      ...Object.keys(remotePageUpdatedAt).map(Number),
+    ]);
+    const pages: number[] = [];
+    const nextPageUpdatedAt: TimestampMap = {};
+
+    pageIndexes.forEach((page) => {
+      if (!Number.isInteger(page) || page < 0 || page >= pageCount) return;
+      const key = String(page);
+      const localPageTimestamp = localPageUpdatedAt[key] ?? (localPageSet.has(page) ? localUpdatedAt : 0);
+      const remotePageTimestamp = remotePageUpdatedAt[key] ?? (remotePageSet.has(page) ? remoteUpdatedAt : 0);
+      const useRemote = remotePageTimestamp > localPageTimestamp;
+      const bookmarked = useRemote ? remotePageSet.has(page) : localPageSet.has(page);
+      const updatedAt = Math.max(localPageTimestamp, remotePageTimestamp);
+      if (bookmarked) pages.push(page);
+      if (updatedAt > 0) nextPageUpdatedAt[key] = updatedAt;
+    });
+
+    pages.sort((a, b) => a - b);
     if (pages.length > 0) bookmarks[docKey] = pages;
-    if (localUpdatedAt > 0 || remoteUpdatedAt > 0) {
-      nextState.settings.driveSync.bookmarkUpdatedAt[docKey] = Math.max(localUpdatedAt, remoteUpdatedAt);
+    const updatedAt = maxTimestamp(nextPageUpdatedAt);
+    if (updatedAt > 0) {
+      nextState.settings.driveSync.bookmarkUpdatedAt[docKey] = updatedAt;
+      nextState.settings.driveSync.bookmarkPageUpdatedAt[docKey] = nextPageUpdatedAt;
+    } else {
+      delete nextState.settings.driveSync.bookmarkUpdatedAt[docKey];
+      delete nextState.settings.driveSync.bookmarkPageUpdatedAt[docKey];
     }
   });
 
@@ -409,7 +463,12 @@ function normalizeSyncBookmarks(rawBookmarks: unknown): Record<string, DriveSync
           .map((page) => Math.floor(page))
           .filter((page) => page >= 0),
       )).sort((a, b) => a - b);
-      return [[docKey, { pages, updatedAt } satisfies DriveSyncBookmarkRecord]];
+      const pageUpdatedAt = normalizePageTimestampMap(rawBookmark.pageUpdatedAt);
+      pages.forEach((page) => {
+        const key = String(page);
+        pageUpdatedAt[key] = pageUpdatedAt[key] ?? updatedAt;
+      });
+      return [[docKey, { pages, updatedAt, pageUpdatedAt } satisfies DriveSyncBookmarkRecord]];
     }),
   );
 }
@@ -428,6 +487,9 @@ function removeDocument(state: AppState, docKey: string): void {
   delete state.documentSources[docKey];
   delete state.readerStates[docKey];
   delete state.studyData.bookmarks[docKey];
+  delete state.settings.driveSync.lastPageUpdatedAt[docKey];
+  delete state.settings.driveSync.bookmarkUpdatedAt[docKey];
+  delete state.settings.driveSync.bookmarkPageUpdatedAt[docKey];
   state.studyData.comments = state.studyData.comments.filter((comment) => comment.docKey !== docKey);
   if (state.settings.selectedDocKey === docKey) {
     state.settings.selectedDocKey = null;
@@ -449,6 +511,10 @@ function mergeTimestampMaps(...maps: TimestampMap[]): TimestampMap {
     });
   });
   return merged;
+}
+
+function maxTimestamp(map: TimestampMap): number {
+  return Object.values(map).reduce((max, timestamp) => Math.max(max, timestamp), 0);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -473,6 +539,19 @@ function normalizeTimestampMap(value: unknown): TimestampMap {
     Object.entries(value).flatMap(([key, rawTimestamp]) => {
       const timestamp = timestampOr(rawTimestamp, 0);
       return timestamp > 0 ? [[key, timestamp]] : [];
+    }),
+  );
+}
+
+function normalizePageTimestampMap(value: unknown): TimestampMap {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([rawPage, rawTimestamp]) => {
+      const page = Number(rawPage);
+      const timestamp = timestampOr(rawTimestamp, 0);
+      return Number.isInteger(page) && page >= 0 && timestamp > 0
+        ? [[String(page), timestamp]]
+        : [];
     }),
   );
 }

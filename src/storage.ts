@@ -29,6 +29,7 @@ export type DriveSyncSettingsState = {
   pendingCommentTombstones: Record<string, number>;
   lastPageUpdatedAt: Record<string, number>;
   bookmarkUpdatedAt: Record<string, number>;
+  bookmarkPageUpdatedAt: Record<string, Record<string, number>>;
 };
 
 export type StoredSubject = {
@@ -161,6 +162,7 @@ export const DefaultDriveSyncSettings: DriveSyncSettingsState = {
   pendingCommentTombstones: {},
   lastPageUpdatedAt: {},
   bookmarkUpdatedAt: {},
+  bookmarkPageUpdatedAt: {},
 };
 
 const SettingsStoreKey = 'settings';
@@ -529,6 +531,16 @@ function normalizeTimestampMap(value: unknown): Record<string, number> {
   );
 }
 
+function normalizeNestedTimestampMap(value: unknown): Record<string, Record<string, number>> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, rawMap]) => {
+      const map = normalizeTimestampMap(rawMap);
+      return Object.keys(map).length > 0 ? [[key, map]] : [];
+    }),
+  );
+}
+
 function makeDeviceId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `device-${crypto.randomUUID()}`;
@@ -699,6 +711,7 @@ function normalizeDriveSyncSettings(rawDriveSync: Record<string, unknown> | unde
     pendingCommentTombstones: normalizeTimestampMap(rawDriveSync?.pendingCommentTombstones),
     lastPageUpdatedAt: normalizeTimestampMap(rawDriveSync?.lastPageUpdatedAt),
     bookmarkUpdatedAt: normalizeTimestampMap(rawDriveSync?.bookmarkUpdatedAt),
+    bookmarkPageUpdatedAt: normalizeNestedTimestampMap(rawDriveSync?.bookmarkPageUpdatedAt),
   };
 }
 

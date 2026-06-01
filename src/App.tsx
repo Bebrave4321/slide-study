@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type SetStateAction } from 'react';
 import {
   ArrowLeft,
   ArrowUpDown,
@@ -574,7 +574,7 @@ function wait(ms: number): Promise<void> {
 }
 
 function App() {
-  const [stored, setStored] = useState<AppState>(() => createInitialAppState());
+  const [stored, setStoredState] = useState<AppState>(() => createInitialAppState());
   const [storageReady, setStorageReady] = useState(false);
   const [screen, setScreen] = useState<AppScreen>('library');
   const [runtimePdf, setRuntimePdf] = useState<RuntimePdf | null>(null);
@@ -609,7 +609,19 @@ function App() {
   const silentReconnectAttemptedRef = useRef(false);
   const syncDebounceRef = useRef<number | null>(null);
   const storedRef = useRef(stored);
+  const storedRevisionRef = useRef(0);
   const syncFingerprintRef = useRef('');
+  const setStored = useCallback((nextState: SetStateAction<AppState>) => {
+    const previous = storedRef.current;
+    const resolved = typeof nextState === 'function'
+      ? (nextState as (value: AppState) => AppState)(previous)
+      : nextState;
+    storedRef.current = resolved;
+    if (!Object.is(resolved, previous)) {
+      storedRevisionRef.current += 1;
+    }
+    setStoredState(resolved);
+  }, []);
   const driveConfigStatus = useMemo(() => getDriveConfigStatus(), []);
 
   useEffect(() => {
@@ -739,64 +751,101 @@ function App() {
     }
 
     try {
-      const baseState = storedRef.current;
-      const stateForSync: AppState = enable || !baseState.settings.driveSync.enabled
-        ? {
-          ...baseState,
-          settings: {
-            ...baseState.settings,
-            driveSync: {
-              ...baseState.settings.driveSync,
-              enabled: true,
+      const withSyncEnabled = (state: AppState): AppState => (
+        enable || !state.settings.driveSync.enabled
+          ? {
+            ...state,
+            settings: {
+              ...state.settings,
+              driveSync: {
+                ...state.settings.driveSync,
+                enabled: true,
+              },
             },
-          },
-        }
-        : baseState;
+          }
+          : state
+      );
+      const stateForAuth = withSyncEnabled(storedRef.current);
       const authOptions: DriveAuthOptions = {
         ...driveAuthOptions,
-        hasGrantedFileAccess: stateForSync.settings.driveAuth.hasGrantedFileAccess,
-        hasGrantedAppDataAccess: stateForSync.settings.driveAuth.hasGrantedAppDataAccess,
-        forceConsent: userInitiated && !stateForSync.settings.driveAuth.hasGrantedAppDataAccess,
+        hasGrantedFileAccess: stateForAuth.settings.driveAuth.hasGrantedFileAccess,
+        hasGrantedAppDataAccess: stateForAuth.settings.driveAuth.hasGrantedAppDataAccess,
+        forceConsent: userInitiated && !stateForAuth.settings.driveAuth.hasGrantedAppDataAccess,
       };
       const remoteFile = await readDriveAppDataJsonFile(DriveSyncFileName, authOptions);
       if (remoteFile && !resetRemote && !parseDriveSyncEnvelope(remoteFile.data)) {
         throw new Error('Drive sync file is not a supported Slide Study sync file. Use Reset remote sync to replace it.');
       }
-      const merged = resetRemote
-        ? stateForSync
-        : mergeDriveSyncEnvelope(stateForSync, remoteFile?.data ?? null);
-      const saved = await saveDriveAppDataJsonFile(
-        DriveSyncFileName,
-        createDriveSyncEnvelope(merged),
-        authOptions,
-        remoteFile?.id,
-      );
+      let remoteRaw: unknown = remoteFile?.data ?? null;
+      let remoteFileId = remoteFile?.id;
+      let remoteModifiedTime = remoteFile?.modifiedTime ?? null;
+      let finalMerged: AppState | null = null;
+      let savedFingerprint = '';
+      let needsFollowUpSync = false;
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const sourceState = withSyncEnabled(storedRef.current);
+        const sourceRevision = storedRevisionRef.current;
+        const merged = resetRemote
+          ? sourceState
+          : mergeDriveSyncEnvelope(sourceState, remoteRaw);
+        const envelope = createDriveSyncEnvelope(merged);
+        const saved = await saveDriveAppDataJsonFile(
+          DriveSyncFileName,
+          envelope,
+          authOptions,
+          remoteFileId,
+        );
+        remoteRaw = envelope;
+        remoteFileId = saved.id;
+        remoteModifiedTime = saved.modifiedTime ?? remoteModifiedTime;
+        finalMerged = merged;
+        savedFingerprint = getDriveSyncFingerprint(merged);
+
+        const currentState = withSyncEnabled(storedRef.current);
+        if (storedRevisionRef.current === sourceRevision) {
+          break;
+        }
+
+        if (attempt === 2) {
+          finalMerged = resetRemote
+            ? currentState
+            : mergeDriveSyncEnvelope(currentState, remoteRaw);
+          needsFollowUpSync = true;
+        }
+      }
+
+      if (!finalMerged) return;
       const syncedAt = Date.now();
       const finalState: AppState = {
-        ...merged,
+        ...finalMerged,
         settings: {
-          ...merged.settings,
+          ...finalMerged.settings,
           driveAuth: {
-            ...merged.settings.driveAuth,
+            ...finalMerged.settings.driveAuth,
             hasGrantedFileAccess: true,
             hasGrantedAppDataAccess: true,
           },
           driveSync: {
-            ...merged.settings.driveSync,
+            ...finalMerged.settings.driveSync,
             enabled: true,
             lastSyncedAt: syncedAt,
-            lastRemoteModifiedTime: saved.modifiedTime ?? remoteFile?.modifiedTime ?? null,
+            lastRemoteModifiedTime: remoteModifiedTime,
           },
         },
       };
       storedRef.current = finalState;
-      syncFingerprintRef.current = getDriveSyncFingerprint(finalState);
+      const finalFingerprint = getDriveSyncFingerprint(finalState);
+      const hasUnsavedSyncChanges = needsFollowUpSync && finalFingerprint !== savedFingerprint;
+      syncFingerprintRef.current = hasUnsavedSyncChanges ? savedFingerprint : finalFingerprint;
       syncSessionReadyRef.current = true;
       setStored(finalState);
-      setSyncStatus({ kind: 'synced', label: 'Synced' });
+      setSyncStatus(hasUnsavedSyncChanges ? { kind: 'idle', label: 'Sync pending' } : { kind: 'synced', label: 'Synced' });
       setSyncIssue(null);
       if (!silent) {
-        setStatusText(resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
+        setStatusText(hasUnsavedSyncChanges
+          ? 'Recent changes will sync next.'
+          : resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
       }
     } catch (error) {
       const message = driveSyncMessage(error, 'Could not sync with Google Drive.');
@@ -895,9 +944,8 @@ function App() {
   const persistDocPage = useCallback((docKey: string, nextPageIndex: number) => {
     setStored((prev) => {
       const readerState = prev.readerStates[docKey];
-      const documentMeta = prev.documents[docKey];
       const source = prev.documentSources[docKey];
-      if (!readerState || !documentMeta) return prev;
+      if (!readerState || !prev.documents[docKey]) return prev;
       const now = Date.now();
       return {
         ...prev,
@@ -913,13 +961,6 @@ function App() {
               },
             }
             : prev.settings.driveSync,
-        },
-        documents: {
-          ...prev.documents,
-          [docKey]: {
-            ...documentMeta,
-            updatedAt: now,
-          },
         },
         readerStates: {
           ...prev.readerStates,
@@ -1563,6 +1604,15 @@ function App() {
                     ...prev.settings.driveSync.pendingDocumentTombstones,
                     [doc.key]: now,
                   },
+                  lastPageUpdatedAt: Object.fromEntries(
+                    Object.entries(prev.settings.driveSync.lastPageUpdatedAt).filter(([key]) => key !== doc.key),
+                  ),
+                  bookmarkUpdatedAt: Object.fromEntries(
+                    Object.entries(prev.settings.driveSync.bookmarkUpdatedAt).filter(([key]) => key !== doc.key),
+                  ),
+                  bookmarkPageUpdatedAt: Object.fromEntries(
+                    Object.entries(prev.settings.driveSync.bookmarkPageUpdatedAt).filter(([key]) => key !== doc.key),
+                  ),
                 }
                 : prev.settings.driveSync,
             },
@@ -1625,6 +1675,13 @@ function App() {
               bookmarkUpdatedAt: {
                 ...prev.settings.driveSync.bookmarkUpdatedAt,
                 [docKey]: now,
+              },
+              bookmarkPageUpdatedAt: {
+                ...prev.settings.driveSync.bookmarkPageUpdatedAt,
+                [docKey]: {
+                  ...prev.settings.driveSync.bookmarkPageUpdatedAt[docKey],
+                  [String(pageIndex)]: now,
+                },
               },
             }
             : prev.settings.driveSync,
