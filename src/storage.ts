@@ -19,9 +19,58 @@ export type DriveAuthSettingsState = {
   hasGrantedAppDataAccess: boolean;
 };
 
+type DriveSyncOperationBase = {
+  id: string;
+  deviceId: string;
+  seq: number;
+  createdAt: number;
+};
+
+export type DriveSyncOperation =
+  | (DriveSyncOperationBase & {
+    type: 'subjectUpsert';
+    subject: StoredSubject;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'subjectDelete';
+    subjectId: string;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'documentUpsert';
+    document: DocumentLibraryMetadata;
+    source: DocumentSourceMetadata;
+    reader: DocumentReaderState;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'documentDelete';
+    docKey: string;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'lastPageSet';
+    docKey: string;
+    pageIndex: number;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'bookmarkSet';
+    docKey: string;
+    pageIndex: number;
+    bookmarked: boolean;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'commentUpsert';
+    comment: StoredComment;
+  })
+  | (DriveSyncOperationBase & {
+    type: 'commentDelete';
+    commentId: string;
+    docKey: string;
+  });
+
 export type DriveSyncSettingsState = {
   enabled: boolean;
   deviceId: string;
+  localOperationSeq: number;
+  pendingOperations: DriveSyncOperation[];
   lastSyncedAt: number | null;
   lastRemoteModifiedTime: string | null;
   pendingSubjectTombstones: Record<string, number>;
@@ -155,6 +204,8 @@ export const DefaultDriveAuthSettings: DriveAuthSettingsState = {
 export const DefaultDriveSyncSettings: DriveSyncSettingsState = {
   enabled: false,
   deviceId: '',
+  localOperationSeq: 0,
+  pendingOperations: [],
   lastSyncedAt: null,
   lastRemoteModifiedTime: null,
   pendingSubjectTombstones: {},
@@ -219,6 +270,11 @@ export async function loadAppState(): Promise<AppState> {
 
 export async function saveAppState(state: AppState): Promise<void> {
   const normalized = normalizeAppState(state);
+  try {
+    saveLocalStorageAppState(normalized);
+  } catch {
+    // IndexedDB below may still succeed; the UI surfaces failure if both paths fail.
+  }
   saveQueue = saveQueue
     .catch(() => undefined)
     .then(async () => {
@@ -701,9 +757,19 @@ function normalizeDriveAuthSettings(rawDriveAuth: Record<string, unknown> | unde
 }
 
 function normalizeDriveSyncSettings(rawDriveSync: Record<string, unknown> | undefined): DriveSyncSettingsState {
+  const deviceId = textOr(rawDriveSync?.deviceId, makeDeviceId());
+  const pendingOperations = normalizeDriveSyncOperations(rawDriveSync?.pendingOperations, deviceId);
+  const maxLocalPendingSeq = pendingOperations
+    .filter((operation) => operation.deviceId === deviceId)
+    .reduce((max, operation) => Math.max(max, operation.seq), 0);
   return {
     enabled: rawDriveSync?.enabled === true,
-    deviceId: textOr(rawDriveSync?.deviceId, makeDeviceId()),
+    deviceId,
+    localOperationSeq: Math.max(
+      integerInRange(rawDriveSync?.localOperationSeq, 0, 0, Number.MAX_SAFE_INTEGER),
+      maxLocalPendingSeq,
+    ),
+    pendingOperations,
     lastSyncedAt: nullableTimestamp(rawDriveSync?.lastSyncedAt),
     lastRemoteModifiedTime: optionalText(rawDriveSync?.lastRemoteModifiedTime),
     pendingSubjectTombstones: normalizeTimestampMap(rawDriveSync?.pendingSubjectTombstones),
@@ -713,6 +779,111 @@ function normalizeDriveSyncSettings(rawDriveSync: Record<string, unknown> | unde
     bookmarkUpdatedAt: normalizeTimestampMap(rawDriveSync?.bookmarkUpdatedAt),
     bookmarkPageUpdatedAt: normalizeNestedTimestampMap(rawDriveSync?.bookmarkPageUpdatedAt),
   };
+}
+
+function normalizeDriveSyncOperations(rawOperations: unknown, fallbackDeviceId: string): DriveSyncOperation[] {
+  if (!Array.isArray(rawOperations)) return [];
+  const now = Date.now();
+  const seenIds = new Set<string>();
+
+  return rawOperations.flatMap((rawOperation): DriveSyncOperation[] => {
+    if (!isRecord(rawOperation)) return [];
+    const type = optionalText(rawOperation.type);
+    const deviceId = textOr(rawOperation.deviceId, fallbackDeviceId);
+    const seq = integerInRange(rawOperation.seq, 0, 0, Number.MAX_SAFE_INTEGER);
+    const createdAt = timestampOr(rawOperation.createdAt, now);
+    const id = textOr(rawOperation.id, `${deviceId}:${seq}:${type ?? 'operation'}`);
+    if (!id || seenIds.has(id)) return [];
+    seenIds.add(id);
+    const base = { id, deviceId, seq, createdAt };
+
+    if (type === 'subjectUpsert' && isRecord(rawOperation.subject)) {
+      const subject = Object.values(normalizeSubjects({ subject: rawOperation.subject }, now))[0];
+      return subject ? [{ ...base, type, subject }] : [];
+    }
+
+    if (type === 'subjectDelete') {
+      const subjectId = optionalText(rawOperation.subjectId);
+      return subjectId ? [{ ...base, type, subjectId }] : [];
+    }
+
+    if (type === 'documentUpsert' && isRecord(rawOperation.document) && isRecord(rawOperation.source)) {
+      const docKey = textOr(rawOperation.docKey, textOr(rawOperation.document.key, ''));
+      if (!docKey) return [];
+      const source = normalizeDocumentSources({ [docKey]: rawOperation.source }, now)[docKey];
+      if (!source) return [];
+      const document: DocumentLibraryMetadata = {
+        key: docKey,
+        title: textOr(rawOperation.document.title, titleFromFileName(source.fileName)),
+        subjectId: optionalText(rawOperation.document.subjectId),
+        createdAt: timestampOr(rawOperation.document.createdAt, timestampOr(rawOperation.document.updatedAt, now)),
+        updatedAt: timestampOr(rawOperation.document.updatedAt, now),
+      };
+      const rawReader = isRecord(rawOperation.reader) ? rawOperation.reader : {};
+      const reader: DocumentReaderState = {
+        lastPageIndex: integerInRange(rawReader.lastPageIndex, 0, 0, source.pageCount - 1),
+        zoomMode: normalizeZoomMode(rawReader.zoomMode),
+        manualZoom: clamp(finiteNumberOr(rawReader.manualZoom, DefaultManualZoom), MinManualZoom, MaxStoredManualZoom),
+      };
+      return [{ ...base, type, document, source, reader }];
+    }
+
+    if (type === 'documentDelete') {
+      const docKey = optionalText(rawOperation.docKey);
+      return docKey ? [{ ...base, type, docKey }] : [];
+    }
+
+    if (type === 'lastPageSet') {
+      const docKey = optionalText(rawOperation.docKey);
+      if (!docKey) return [];
+      return [{
+        ...base,
+        type,
+        docKey,
+        pageIndex: integerInRange(rawOperation.pageIndex, 0, 0, Number.MAX_SAFE_INTEGER),
+      }];
+    }
+
+    if (type === 'bookmarkSet') {
+      const docKey = optionalText(rawOperation.docKey);
+      if (!docKey) return [];
+      return [{
+        ...base,
+        type,
+        docKey,
+        pageIndex: integerInRange(rawOperation.pageIndex, 0, 0, Number.MAX_SAFE_INTEGER),
+        bookmarked: rawOperation.bookmarked === true,
+      }];
+    }
+
+    if (type === 'commentUpsert' && isRecord(rawOperation.comment)) {
+      const idValue = optionalText(rawOperation.comment.id);
+      const docKey = optionalText(rawOperation.comment.docKey);
+      const body = optionalText(rawOperation.comment.body);
+      if (!idValue || !docKey || !body) return [];
+      const updatedAt = timestampOr(rawOperation.comment.updatedAt, timestampOr(rawOperation.comment.createdAt, createdAt));
+      return [{
+        ...base,
+        type,
+        comment: {
+          id: idValue,
+          docKey,
+          pageIndex: integerInRange(rawOperation.comment.pageIndex, 0, 0, Number.MAX_SAFE_INTEGER),
+          body,
+          createdAt: timestampOr(rawOperation.comment.createdAt, updatedAt),
+          updatedAt,
+        },
+      }];
+    }
+
+    if (type === 'commentDelete') {
+      const commentId = optionalText(rawOperation.commentId);
+      const docKey = optionalText(rawOperation.docKey);
+      return commentId && docKey ? [{ ...base, type, commentId, docKey }] : [];
+    }
+
+    return [];
+  });
 }
 
 function normalizeStudyData(

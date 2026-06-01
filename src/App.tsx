@@ -66,6 +66,7 @@ import {
   type DocumentReaderState,
   type DocumentSourceMetadata,
   type DocumentSourceKind,
+  type DriveSyncOperation,
   type SortMode,
   type StoredComment,
   type StoredDocument,
@@ -79,6 +80,7 @@ import {
   createDriveSyncEnvelope,
   getDriveSyncFingerprint,
   mergeDriveSyncEnvelope,
+  mergeDriveSyncOperations,
   parseDriveSyncEnvelope,
 } from './sync';
 
@@ -165,6 +167,7 @@ const SubjectMenuWidth = 176;
 const SubjectMenuEstimatedHeight = 92;
 const MaxClipboardHistoryItemBytes = 4 * 1024 * 1024;
 const ClipboardHistoryCommitDelayMs = 350;
+const AutoPushDebounceMs = 5000;
 const CopyImageAttempts = [
   { maxWidth: 1600, maxHeight: 2200 },
   { maxWidth: 1280, maxHeight: 1800 },
@@ -573,6 +576,63 @@ function wait(ms: number): Promise<void> {
   });
 }
 
+type DriveSyncOperationInput = DriveSyncOperation extends infer Operation
+  ? Operation extends DriveSyncOperation
+    ? Omit<Operation, 'id' | 'deviceId' | 'seq' | 'createdAt'>
+    : never
+  : never;
+
+function createDriveSyncOperation(
+  state: AppState,
+  input: DriveSyncOperationInput,
+  createdAt = Date.now(),
+): DriveSyncOperation {
+  const seq = state.settings.driveSync.localOperationSeq + 1;
+  const deviceId = state.settings.driveSync.deviceId;
+  return {
+    id: `${deviceId}:${seq}`,
+    deviceId,
+    seq,
+    createdAt,
+    ...input,
+  } as DriveSyncOperation;
+}
+
+function withDriveSyncOperation(state: AppState, operation: DriveSyncOperation | null): AppState {
+  if (!operation) return state;
+  return {
+    ...state,
+    settings: {
+      ...state.settings,
+      driveSync: {
+        ...state.settings.driveSync,
+        localOperationSeq: Math.max(state.settings.driveSync.localOperationSeq, operation.seq),
+        pendingOperations: [
+          ...state.settings.driveSync.pendingOperations.filter((pending) => pending.id !== operation.id),
+          operation,
+        ],
+      },
+    },
+  };
+}
+
+function clearPendingDriveSyncOperations(state: AppState, operationIds: Set<string>): AppState {
+  if (operationIds.size === 0) return state;
+  const pendingOperations = state.settings.driveSync.pendingOperations
+    .filter((operation) => !operationIds.has(operation.id));
+  if (pendingOperations.length === state.settings.driveSync.pendingOperations.length) return state;
+  return {
+    ...state,
+    settings: {
+      ...state.settings,
+      driveSync: {
+        ...state.settings.driveSync,
+        pendingOperations,
+      },
+    },
+  };
+}
+
 function App() {
   const [stored, setStoredState] = useState<AppState>(() => createInitialAppState());
   const [storageReady, setStorageReady] = useState(false);
@@ -727,7 +787,8 @@ function App() {
     enable = false,
     resetRemote = false,
     silent = false,
-  }: { userInitiated?: boolean; enable?: boolean; resetRemote?: boolean; silent?: boolean } = {}) => {
+    mode = 'full',
+  }: { userInitiated?: boolean; enable?: boolean; resetRemote?: boolean; silent?: boolean; mode?: 'full' | 'pushOnly' } = {}) => {
     if (syncBusyRef.current) {
       if (userInitiated) setStatusText('Drive sync is already running.');
       return;
@@ -744,10 +805,11 @@ function App() {
 
     syncBusyRef.current = true;
     setSyncBusy(true);
-    setSyncStatus({ kind: 'syncing', label: silent ? 'Reconnecting...' : 'Syncing...' });
+    const effectiveMode = resetRemote ? 'full' : mode;
+    setSyncStatus({ kind: 'syncing', label: effectiveMode === 'pushOnly' ? 'Uploading...' : silent ? 'Reconnecting...' : 'Syncing...' });
     if (!silent) setSyncIssue(null);
     if (!silent) {
-      setStatusText(userInitiated ? 'Syncing with Google Drive...' : 'Auto-syncing with Google Drive...');
+      setStatusText(effectiveMode === 'pushOnly' ? 'Uploading changes to Google Drive...' : 'Syncing with Google Drive...');
     }
 
     try {
@@ -779,17 +841,20 @@ function App() {
       let remoteRaw: unknown = remoteFile?.data ?? null;
       let remoteFileId = remoteFile?.id;
       let remoteModifiedTime = remoteFile?.modifiedTime ?? null;
-      let finalMerged: AppState | null = null;
-      let savedFingerprint = '';
-      let needsFollowUpSync = false;
+      let finalMergedForRemote: AppState | null = null;
+      let savedOperationIds = new Set<string>();
+      let needsFollowUpPush = false;
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const sourceState = withSyncEnabled(storedRef.current);
         const sourceRevision = storedRevisionRef.current;
+        const mergedOperations = resetRemote
+          ? [...sourceState.settings.driveSync.pendingOperations]
+          : mergeDriveSyncOperations(sourceState, remoteRaw);
         const merged = resetRemote
           ? sourceState
-          : mergeDriveSyncEnvelope(sourceState, remoteRaw);
-        const envelope = createDriveSyncEnvelope(merged);
+          : mergeDriveSyncEnvelope(sourceState, remoteRaw, Date.now(), mergedOperations);
+        const envelope = createDriveSyncEnvelope(merged, Date.now(), mergedOperations);
         const saved = await saveDriveAppDataJsonFile(
           DriveSyncFileName,
           envelope,
@@ -799,8 +864,8 @@ function App() {
         remoteRaw = envelope;
         remoteFileId = saved.id;
         remoteModifiedTime = saved.modifiedTime ?? remoteModifiedTime;
-        finalMerged = merged;
-        savedFingerprint = getDriveSyncFingerprint(merged);
+        finalMergedForRemote = merged;
+        savedOperationIds = new Set(sourceState.settings.driveSync.pendingOperations.map((operation) => operation.id));
 
         const currentState = withSyncEnabled(storedRef.current);
         if (storedRevisionRef.current === sourceRevision) {
@@ -808,44 +873,51 @@ function App() {
         }
 
         if (attempt === 2) {
-          finalMerged = resetRemote
+          finalMergedForRemote = resetRemote
             ? currentState
-            : mergeDriveSyncEnvelope(currentState, remoteRaw);
-          needsFollowUpSync = true;
+            : mergeDriveSyncEnvelope(currentState, remoteRaw, Date.now(), mergeDriveSyncOperations(currentState, remoteRaw));
+          needsFollowUpPush = true;
         }
       }
 
-      if (!finalMerged) return;
+      if (!finalMergedForRemote) return;
       const syncedAt = Date.now();
-      const finalState: AppState = {
-        ...finalMerged,
+      const baseState = effectiveMode === 'pushOnly'
+        ? withSyncEnabled(storedRef.current)
+        : finalMergedForRemote;
+      const finalStateBeforeClear: AppState = {
+        ...baseState,
         settings: {
-          ...finalMerged.settings,
+          ...baseState.settings,
           driveAuth: {
-            ...finalMerged.settings.driveAuth,
+            ...baseState.settings.driveAuth,
             hasGrantedFileAccess: true,
             hasGrantedAppDataAccess: true,
           },
           driveSync: {
-            ...finalMerged.settings.driveSync,
+            ...baseState.settings.driveSync,
             enabled: true,
             lastSyncedAt: syncedAt,
             lastRemoteModifiedTime: remoteModifiedTime,
           },
         },
       };
-      storedRef.current = finalState;
+      const finalState = clearPendingDriveSyncOperations(finalStateBeforeClear, savedOperationIds);
+      const hasPendingOperations = finalState.settings.driveSync.pendingOperations.length > 0 || needsFollowUpPush;
       const finalFingerprint = getDriveSyncFingerprint(finalState);
-      const hasUnsavedSyncChanges = needsFollowUpSync && finalFingerprint !== savedFingerprint;
-      syncFingerprintRef.current = hasUnsavedSyncChanges ? savedFingerprint : finalFingerprint;
+      syncFingerprintRef.current = finalFingerprint;
       syncSessionReadyRef.current = true;
       setStored(finalState);
-      setSyncStatus(hasUnsavedSyncChanges ? { kind: 'idle', label: 'Sync pending' } : { kind: 'synced', label: 'Synced' });
+      setSyncStatus(hasPendingOperations ? { kind: 'idle', label: 'Sync pending' } : { kind: 'synced', label: 'Synced' });
       setSyncIssue(null);
       if (!silent) {
-        setStatusText(hasUnsavedSyncChanges
+        setStatusText(hasPendingOperations
           ? 'Recent changes will sync next.'
-          : resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
+          : resetRemote
+            ? 'Remote sync data was reset.'
+            : effectiveMode === 'pushOnly'
+              ? 'Drive upload complete.'
+              : 'Drive sync complete.');
       }
     } catch (error) {
       const message = driveSyncMessage(error, 'Could not sync with Google Drive.');
@@ -870,12 +942,16 @@ function App() {
   useEffect(() => {
     if (!storageReady) return;
     syncFingerprintRef.current = getDriveSyncFingerprint(stored);
-    setSyncStatus(stored.settings.driveSync.enabled
-      ? {
-        kind: 'paused',
-        label: stored.settings.driveSync.lastSyncedAt ? 'Sync paused' : 'Ready to sync',
-      }
-      : { kind: 'off', label: 'Not connected' });
+    if (stored.settings.driveSync.enabled) {
+      const hasPendingOperations = stored.settings.driveSync.pendingOperations.length > 0;
+      setSyncStatus(hasPendingOperations
+        ? { kind: 'idle', label: 'Sync pending' }
+        : stored.settings.driveSync.lastSyncedAt
+          ? { kind: 'synced', label: 'Synced' }
+          : { kind: 'paused', label: 'Ready to sync' });
+    } else {
+      setSyncStatus({ kind: 'off', label: 'Not connected' });
+    }
     if (!stored.settings.driveSync.enabled) setSyncIssue(null);
   }, [storageReady]);
 
@@ -890,20 +966,17 @@ function App() {
       return undefined;
     }
     silentReconnectAttemptedRef.current = true;
-    const timeoutId = window.setTimeout(() => {
-      void runDriveSync({ silent: true });
-    }, 800);
-    return () => window.clearTimeout(timeoutId);
-  }, [driveConfigStatus.configured, runDriveSync, storageReady]);
+    syncSessionReadyRef.current = true;
+    return undefined;
+  }, [driveConfigStatus.configured, storageReady]);
 
   useEffect(() => {
-    if (!storageReady || !stored.settings.driveSync.enabled || !syncSessionReadyRef.current || syncBusyRef.current) return undefined;
+    if (!storageReady || !stored.settings.driveSync.enabled || syncBusyRef.current) return undefined;
+    if (stored.settings.driveSync.pendingOperations.length === 0) return undefined;
     const fingerprint = getDriveSyncFingerprint(stored);
     if (!syncFingerprintRef.current) {
       syncFingerprintRef.current = fingerprint;
-      return undefined;
     }
-    if (fingerprint === syncFingerprintRef.current) return undefined;
 
     if (syncDebounceRef.current) {
       window.clearTimeout(syncDebounceRef.current);
@@ -912,8 +985,8 @@ function App() {
     setSyncIssue(null);
     syncDebounceRef.current = window.setTimeout(() => {
       syncDebounceRef.current = null;
-      void runDriveSync();
-    }, 2500);
+      void runDriveSync({ mode: 'pushOnly', silent: true });
+    }, AutoPushDebounceMs);
 
     return () => {
       if (syncDebounceRef.current) {
@@ -922,6 +995,34 @@ function App() {
       }
     };
   }, [runDriveSync, storageReady, stored]);
+
+  useEffect(() => {
+    if (!storageReady) return undefined;
+
+    const flushPendingPush = () => {
+      const state = storedRef.current;
+      if (
+        !state.settings.driveSync.enabled
+        || state.settings.driveSync.pendingOperations.length === 0
+        || syncBusyRef.current
+      ) {
+        return;
+      }
+      void runDriveSync({ mode: 'pushOnly', silent: true });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushPendingPush();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', flushPendingPush);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', flushPendingPush);
+    };
+  }, [runDriveSync, storageReady]);
 
   const visibleDocs = useMemo(() => {
     const docs = getAllStoredDocuments(stored)
@@ -947,7 +1048,10 @@ function App() {
       const source = prev.documentSources[docKey];
       if (!readerState || !prev.documents[docKey]) return prev;
       const now = Date.now();
-      return {
+      const operation = source?.sourceKind === 'drive'
+        ? createDriveSyncOperation(prev, { type: 'lastPageSet', docKey, pageIndex: nextPageIndex }, now)
+        : null;
+      return withDriveSyncOperation({
         ...prev,
         settings: {
           ...prev.settings,
@@ -969,7 +1073,7 @@ function App() {
             lastPageIndex: nextPageIndex,
           },
         },
-      };
+      }, operation);
     });
   }, []);
 
@@ -1138,23 +1242,27 @@ function App() {
       return { key, file, document };
     });
     setStored((prev) => ({
-      ...prev,
-      settings: {
-        ...prev.settings,
-        selectedDocKey: key,
-      },
-      documents: {
-        ...prev.documents,
-        [key]: library,
-      },
-      documentSources: {
-        ...prev.documentSources,
-        [key]: source,
-      },
-      readerStates: {
-        ...prev.readerStates,
-        [key]: reader,
-      },
+      ...withDriveSyncOperation({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          selectedDocKey: key,
+        },
+        documents: {
+          ...prev.documents,
+          [key]: library,
+        },
+        documentSources: {
+          ...prev.documentSources,
+          [key]: source,
+        },
+        readerStates: {
+          ...prev.readerStates,
+          [key]: reader,
+        },
+      }, source.sourceKind === 'drive'
+        ? createDriveSyncOperation(prev, { type: 'documentUpsert', document: library, source, reader }, now)
+        : null),
     }));
     setPageIndex(doc.lastPageIndex);
     setScreen('reader');
@@ -1461,17 +1569,20 @@ function App() {
       onConfirm: (value) => {
         const now = Date.now();
         const id = makeId('subject');
-        setStored((prev) => ({
-          ...prev,
-          settings: {
-            ...prev.settings,
-            selectedSubjectId: id,
-          },
-          subjects: {
-            ...prev.subjects,
-            [id]: { id, name: value, createdAt: now, updatedAt: now },
-          },
-        }));
+        setStored((prev) => {
+          const subject = { id, name: value, createdAt: now, updatedAt: now };
+          return withDriveSyncOperation({
+            ...prev,
+            settings: {
+              ...prev.settings,
+              selectedSubjectId: id,
+            },
+            subjects: {
+              ...prev.subjects,
+              [id]: subject,
+            },
+          }, createDriveSyncOperation(prev, { type: 'subjectUpsert', subject }, now));
+        });
       },
     });
   }, []);
@@ -1486,13 +1597,16 @@ function App() {
       confirmLabel: 'Save',
       onConfirm: (value) => {
         if (value === subject.name) return;
-        setStored((prev) => ({
-          ...prev,
-          subjects: {
-            ...prev.subjects,
-            [subject.id]: { ...subject, name: value, updatedAt: Date.now() },
-          },
-        }));
+        setStored((prev) => {
+          const nextSubject = { ...subject, name: value, updatedAt: Date.now() };
+          return withDriveSyncOperation({
+            ...prev,
+            subjects: {
+              ...prev.subjects,
+              [subject.id]: nextSubject,
+            },
+          }, createDriveSyncOperation(prev, { type: 'subjectUpsert', subject: nextSubject }, nextSubject.updatedAt));
+        });
       },
     });
   }, []);
@@ -1514,7 +1628,7 @@ function App() {
               doc.subjectId === subject.id ? { ...doc, subjectId: null, updatedAt: now } : doc,
             ]),
           );
-          return {
+          return withDriveSyncOperation({
             ...prev,
             settings: {
               ...prev.settings,
@@ -1529,7 +1643,7 @@ function App() {
             },
             subjects,
             documents,
-          };
+          }, createDriveSyncOperation(prev, { type: 'subjectDelete', subjectId: subject.id }, now));
         });
       },
     });
@@ -1538,14 +1652,20 @@ function App() {
   const assignDocSubject = useCallback((docKey: string, subjectId: string | null) => {
     setStored((prev) => {
       const doc = prev.documents[docKey];
+      const source = prev.documentSources[docKey];
+      const reader = prev.readerStates[docKey];
       if (!doc) return prev;
-      return {
+      const nextDoc = { ...doc, subjectId, updatedAt: Date.now() };
+      const operation = source?.sourceKind === 'drive' && reader
+        ? createDriveSyncOperation(prev, { type: 'documentUpsert', document: nextDoc, source, reader }, nextDoc.updatedAt)
+        : null;
+      return withDriveSyncOperation({
         ...prev,
         documents: {
           ...prev.documents,
-          [docKey]: { ...doc, subjectId, updatedAt: Date.now() },
+          [docKey]: nextDoc,
         },
-      };
+      }, operation);
     });
   }, []);
 
@@ -1561,18 +1681,24 @@ function App() {
         if (value === doc.title) return;
         setStored((prev) => {
           const current = prev.documents[doc.key];
+          const source = prev.documentSources[doc.key];
+          const reader = prev.readerStates[doc.key];
           if (!current) return prev;
-          return {
+          const nextDoc = {
+            ...current,
+            title: value,
+            updatedAt: Date.now(),
+          };
+          const operation = source?.sourceKind === 'drive' && reader
+            ? createDriveSyncOperation(prev, { type: 'documentUpsert', document: nextDoc, source, reader }, nextDoc.updatedAt)
+            : null;
+          return withDriveSyncOperation({
             ...prev,
             documents: {
               ...prev.documents,
-              [doc.key]: {
-                ...current,
-                title: value,
-                updatedAt: Date.now(),
-              },
+              [doc.key]: nextDoc,
             },
-          };
+          }, operation);
         });
       },
     });
@@ -1592,7 +1718,7 @@ function App() {
           const { [doc.key]: _removedSource, ...documentSources } = prev.documentSources;
           const { [doc.key]: _removedReaderState, ...readerStates } = prev.readerStates;
           const { [doc.key]: _removedBookmarks, ...bookmarks } = prev.studyData.bookmarks;
-          return {
+          return withDriveSyncOperation({
             ...prev,
             settings: {
               ...prev.settings,
@@ -1624,7 +1750,9 @@ function App() {
               bookmarks,
               comments: prev.studyData.comments.filter((comment) => comment.docKey !== doc.key),
             },
-          };
+          }, doc.sourceKind === 'drive'
+            ? createDriveSyncOperation(prev, { type: 'documentDelete', docKey: doc.key }, now)
+            : null);
         });
         if (runtimePdf?.key === doc.key) {
           void runtimePdf.document.destroy();
@@ -1658,14 +1786,23 @@ function App() {
   const toggleBookmark = useCallback(() => {
     if (!stored.settings.selectedDocKey) return;
     setStored((prev) => {
-      const docKey = stored.settings.selectedDocKey!;
+      const docKey = prev.settings.selectedDocKey;
+      if (!docKey) return prev;
       const existing = prev.studyData.bookmarks[docKey] ?? [];
       const next = existing.includes(pageIndex)
         ? existing.filter((page) => page !== pageIndex)
         : [...existing, pageIndex].sort((a, b) => a - b);
       const source = prev.documentSources[docKey];
       const now = Date.now();
-      return {
+      const operation = source?.sourceKind === 'drive'
+        ? createDriveSyncOperation(prev, {
+          type: 'bookmarkSet',
+          docKey,
+          pageIndex,
+          bookmarked: !existing.includes(pageIndex),
+        }, now)
+        : null;
+      return withDriveSyncOperation({
         ...prev,
         settings: {
           ...prev.settings,
@@ -1693,7 +1830,7 @@ function App() {
             [docKey]: next,
           },
         },
-      };
+      }, operation);
     });
   }, [pageIndex, stored.settings.selectedDocKey]);
 
@@ -1709,8 +1846,16 @@ function App() {
     const normalized = commentDraft.trim();
     setStored((prev) => {
       const now = Date.now();
+      const docKey = prev.settings.selectedDocKey;
+      if (!docKey) return prev;
+      const source = prev.documentSources[docKey];
       if (editingCommentId) {
-        return {
+        const target = prev.studyData.comments.find((comment) => comment.id === editingCommentId);
+        const nextComment = target ? { ...target, body: normalized, updatedAt: now } : null;
+        const operation = nextComment && source?.sourceKind === 'drive'
+          ? createDriveSyncOperation(prev, { type: 'commentUpsert', comment: nextComment }, now)
+          : null;
+        return withDriveSyncOperation({
           ...prev,
           studyData: {
             ...prev.studyData,
@@ -1720,25 +1865,29 @@ function App() {
                 : comment
             )),
           },
-        };
+        }, operation);
       }
-      return {
+      const comment: StoredComment = {
+        id: makeId('comment'),
+        docKey,
+        pageIndex,
+        body: normalized,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const operation = source?.sourceKind === 'drive'
+        ? createDriveSyncOperation(prev, { type: 'commentUpsert', comment }, now)
+        : null;
+      return withDriveSyncOperation({
         ...prev,
         studyData: {
           ...prev.studyData,
           comments: [
             ...prev.studyData.comments,
-            {
-              id: makeId('comment'),
-              docKey: stored.settings.selectedDocKey!,
-              pageIndex,
-              body: normalized,
-              createdAt: now,
-              updatedAt: now,
-            },
+            comment,
           ],
         },
-      };
+      }, operation);
     });
     setComposerOpen(false);
     setEditingCommentId(null);
@@ -1764,7 +1913,10 @@ function App() {
           const target = prev.studyData.comments.find((comment) => comment.id === commentId);
           const source = target ? prev.documentSources[target.docKey] : null;
           const now = Date.now();
-          return {
+          const operation = target && source?.sourceKind === 'drive'
+            ? createDriveSyncOperation(prev, { type: 'commentDelete', commentId, docKey: target.docKey }, now)
+            : null;
+          return withDriveSyncOperation({
             ...prev,
             settings: {
               ...prev.settings,
@@ -1782,7 +1934,7 @@ function App() {
               ...prev.studyData,
               comments: prev.studyData.comments.filter((comment) => comment.id !== commentId),
             },
-          };
+          }, operation);
         });
         if (editingCommentId === commentId) {
           setEditingCommentId(null);

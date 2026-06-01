@@ -5,6 +5,7 @@ import {
   type DocumentLibraryMetadata,
   type DocumentReaderState,
   type DocumentSourceMetadata,
+  type DriveSyncOperation,
   MaxStoredManualZoom,
   MinManualZoom,
   clamp,
@@ -14,7 +15,9 @@ import {
 } from './storage';
 
 export const DriveSyncFileName = 'slide-study-sync-v1.json';
-export const DriveSyncSchemaVersion = 1;
+export const DriveSyncSchemaVersion = 2;
+const LegacyDriveSyncSchemaVersion = 1;
+const MaxStoredDriveSyncOperations = 2000;
 
 type TimestampMap = Record<string, number>;
 
@@ -35,6 +38,7 @@ export type DriveSyncEnvelope = {
   schemaVersion: typeof DriveSyncSchemaVersion;
   updatedAt: number;
   updatedBy: string;
+  operations: DriveSyncOperation[];
   subjects: Record<string, StoredSubject>;
   subjectTombstones: TimestampMap;
   documents: Record<string, DriveSyncDocumentRecord>;
@@ -46,25 +50,30 @@ export type DriveSyncEnvelope = {
 
 type DriveSyncPayload = Omit<DriveSyncEnvelope, 'updatedAt' | 'updatedBy'>;
 
-export function createDriveSyncEnvelope(state: AppState, now = Date.now()): DriveSyncEnvelope {
+export function createDriveSyncEnvelope(
+  state: AppState,
+  now = Date.now(),
+  operations = state.settings.driveSync.pendingOperations,
+): DriveSyncEnvelope {
   return {
-    ...createDriveSyncPayload(state, now),
+    ...createDriveSyncPayload(state, now, operations),
     updatedAt: now,
     updatedBy: state.settings.driveSync.deviceId,
   };
 }
 
 export function getDriveSyncFingerprint(state: AppState): string {
-  return JSON.stringify(createDriveSyncPayload(state, 0));
+  return JSON.stringify(createDriveSyncPayload(state, 0, state.settings.driveSync.pendingOperations));
 }
 
 export function mergeDriveSyncEnvelope(
   localState: AppState,
   remoteRaw: unknown,
   now = Date.now(),
+  operations = mergeDriveSyncOperations(localState, remoteRaw),
 ): AppState {
   const remote = normalizeDriveSyncEnvelope(remoteRaw);
-  if (!remote) return normalizeAppState(localState, now);
+  if (!remote) return applyDriveSyncOperations(normalizeAppState(localState, now), operations, now);
 
   const subjectTombstones = mergeTimestampMaps(
     localState.settings.driveSync.pendingSubjectTombstones,
@@ -106,14 +115,26 @@ export function mergeDriveSyncEnvelope(
   nextState.studyData.comments = mergeComments(localState, remote, documentTombstones, commentTombstones);
   nextState.studyData.bookmarks = mergeBookmarks(nextState, localState, remote, documentTombstones);
 
-  return normalizeAppState(nextState, now);
+  return applyDriveSyncOperations(normalizeAppState(nextState, now), operations, now);
 }
 
 export function parseDriveSyncEnvelope(raw: unknown): DriveSyncEnvelope | null {
   return normalizeDriveSyncEnvelope(raw);
 }
 
-function createDriveSyncPayload(state: AppState, now: number): DriveSyncPayload {
+export function mergeDriveSyncOperations(localState: AppState, remoteRaw: unknown): DriveSyncOperation[] {
+  const remote = normalizeDriveSyncEnvelope(remoteRaw);
+  return compactDriveSyncOperations([
+    ...(remote?.operations ?? []),
+    ...localState.settings.driveSync.pendingOperations,
+  ]);
+}
+
+function createDriveSyncPayload(
+  state: AppState,
+  now: number,
+  operations: DriveSyncOperation[],
+): DriveSyncPayload {
   const driveDocKeys = getDriveDocKeys(state);
   const driveDocKeySet = new Set(driveDocKeys);
   const documents = Object.fromEntries(
@@ -139,6 +160,7 @@ function createDriveSyncPayload(state: AppState, now: number): DriveSyncPayload 
   return {
     app: 'slide-study-drive-sync',
     schemaVersion: DriveSyncSchemaVersion,
+    operations: compactDriveSyncOperations(operations),
     subjects: state.subjects,
     subjectTombstones: state.settings.driveSync.pendingSubjectTombstones,
     documents,
@@ -349,8 +371,209 @@ function mergeBookmarks(
   return bookmarks;
 }
 
+function applyDriveSyncOperations(state: AppState, operations: DriveSyncOperation[], now: number): AppState {
+  const nextState: AppState = {
+    ...state,
+    subjects: { ...state.subjects },
+    documents: { ...state.documents },
+    documentSources: { ...state.documentSources },
+    readerStates: { ...state.readerStates },
+    studyData: {
+      comments: [...state.studyData.comments],
+      bookmarks: Object.fromEntries(
+        Object.entries(state.studyData.bookmarks).map(([docKey, pages]) => [docKey, [...pages]]),
+      ),
+    },
+    settings: {
+      ...state.settings,
+      driveSync: {
+        ...state.settings.driveSync,
+        pendingSubjectTombstones: { ...state.settings.driveSync.pendingSubjectTombstones },
+        pendingDocumentTombstones: { ...state.settings.driveSync.pendingDocumentTombstones },
+        pendingCommentTombstones: { ...state.settings.driveSync.pendingCommentTombstones },
+        lastPageUpdatedAt: { ...state.settings.driveSync.lastPageUpdatedAt },
+        bookmarkUpdatedAt: { ...state.settings.driveSync.bookmarkUpdatedAt },
+        bookmarkPageUpdatedAt: Object.fromEntries(
+          Object.entries(state.settings.driveSync.bookmarkPageUpdatedAt)
+            .map(([docKey, map]) => [docKey, { ...map }]),
+        ),
+        pendingOperations: [...state.settings.driveSync.pendingOperations],
+      },
+    },
+  };
+
+  const sortedOperations = compactDriveSyncOperations(operations)
+    .sort(compareDriveSyncOperations);
+  sortedOperations.forEach((operation) => {
+    applyDriveSyncOperation(nextState, operation, now);
+  });
+
+  return normalizeAppState(nextState, now);
+}
+
+function applyDriveSyncOperation(state: AppState, operation: DriveSyncOperation, now: number): void {
+  switch (operation.type) {
+    case 'subjectUpsert':
+      applySubjectUpsertOperation(state, operation.subject);
+      return;
+    case 'subjectDelete':
+      state.settings.driveSync.pendingSubjectTombstones[operation.subjectId] = Math.max(
+        state.settings.driveSync.pendingSubjectTombstones[operation.subjectId] ?? 0,
+        operation.createdAt,
+      );
+      delete state.subjects[operation.subjectId];
+      Object.entries(state.documents).forEach(([docKey, document]) => {
+        if (document.subjectId === operation.subjectId) {
+          state.documents[docKey] = { ...document, subjectId: null, updatedAt: Math.max(document.updatedAt, operation.createdAt) };
+        }
+      });
+      if (state.settings.selectedSubjectId === operation.subjectId) {
+        state.settings.selectedSubjectId = null;
+      }
+      return;
+    case 'documentUpsert':
+      applyDocumentUpsertOperation(state, operation.document, operation.source, operation.reader, operation.createdAt);
+      return;
+    case 'documentDelete':
+      state.settings.driveSync.pendingDocumentTombstones[operation.docKey] = Math.max(
+        state.settings.driveSync.pendingDocumentTombstones[operation.docKey] ?? 0,
+        operation.createdAt,
+      );
+      removeDocument(state, operation.docKey);
+      return;
+    case 'lastPageSet':
+      applyLastPageSetOperation(state, operation.docKey, operation.pageIndex, operation.createdAt);
+      return;
+    case 'bookmarkSet':
+      applyBookmarkSetOperation(state, operation.docKey, operation.pageIndex, operation.bookmarked, operation.createdAt);
+      return;
+    case 'commentUpsert':
+      applyCommentUpsertOperation(state, operation.comment, operation.createdAt);
+      return;
+    case 'commentDelete':
+      state.settings.driveSync.pendingCommentTombstones[operation.commentId] = Math.max(
+        state.settings.driveSync.pendingCommentTombstones[operation.commentId] ?? 0,
+        operation.createdAt,
+      );
+      state.studyData.comments = state.studyData.comments.filter((comment) => {
+        if (comment.id !== operation.commentId) return true;
+        return comment.updatedAt > operation.createdAt;
+      });
+      return;
+    default:
+      return;
+  }
+}
+
+function applySubjectUpsertOperation(state: AppState, subject: StoredSubject): void {
+  const deletedAt = state.settings.driveSync.pendingSubjectTombstones[subject.id] ?? 0;
+  if (deletedAt >= subject.updatedAt) return;
+  const existing = state.subjects[subject.id];
+  if (!existing || subject.updatedAt >= existing.updatedAt) {
+    state.subjects[subject.id] = subject;
+  }
+}
+
+function applyDocumentUpsertOperation(
+  state: AppState,
+  document: DocumentLibraryMetadata,
+  source: DocumentSourceMetadata,
+  reader: DocumentReaderState,
+  operationAt: number,
+): void {
+  if (source.sourceKind !== 'drive' || !source.driveFileId) return;
+  const deletedAt = state.settings.driveSync.pendingDocumentTombstones[document.key] ?? 0;
+  if (deletedAt >= Math.max(document.updatedAt, operationAt)) return;
+  const existing = state.documents[document.key];
+  if (!existing || document.updatedAt >= existing.updatedAt) {
+    state.documents[document.key] = document;
+    state.documentSources[document.key] = source;
+  }
+  if (!state.readerStates[document.key]) {
+    state.readerStates[document.key] = {
+      lastPageIndex: clamp(reader.lastPageIndex, 0, source.pageCount - 1),
+      zoomMode: DefaultZoomMode,
+      manualZoom: DefaultManualZoom,
+    };
+    state.settings.driveSync.lastPageUpdatedAt[document.key] = operationAt;
+  }
+}
+
+function applyLastPageSetOperation(state: AppState, docKey: string, pageIndex: number, operationAt: number): void {
+  const source = state.documentSources[docKey];
+  const reader = state.readerStates[docKey];
+  if (!source || !reader || source.sourceKind !== 'drive') return;
+  const previousUpdatedAt = state.settings.driveSync.lastPageUpdatedAt[docKey] ?? 0;
+  if (operationAt < previousUpdatedAt) return;
+  state.readerStates[docKey] = {
+    ...reader,
+    lastPageIndex: clamp(pageIndex, 0, source.pageCount - 1),
+  };
+  state.settings.driveSync.lastPageUpdatedAt[docKey] = operationAt;
+}
+
+function applyBookmarkSetOperation(
+  state: AppState,
+  docKey: string,
+  pageIndex: number,
+  bookmarked: boolean,
+  operationAt: number,
+): void {
+  const source = state.documentSources[docKey];
+  if (!source || source.sourceKind !== 'drive' || pageIndex < 0 || pageIndex >= source.pageCount) return;
+  const bookmarkPageUpdatedAt = {
+    ...(state.settings.driveSync.bookmarkPageUpdatedAt[docKey] ?? {}),
+  };
+  const pageKey = String(pageIndex);
+  const previousUpdatedAt = bookmarkPageUpdatedAt[pageKey] ?? 0;
+  if (operationAt < previousUpdatedAt) return;
+
+  const pages = new Set(state.studyData.bookmarks[docKey] ?? []);
+  if (bookmarked) {
+    pages.add(pageIndex);
+  } else {
+    pages.delete(pageIndex);
+  }
+  const nextPages = Array.from(pages).sort((a, b) => a - b);
+  if (nextPages.length > 0) {
+    state.studyData.bookmarks[docKey] = nextPages;
+  } else {
+    delete state.studyData.bookmarks[docKey];
+  }
+  bookmarkPageUpdatedAt[pageKey] = operationAt;
+  state.settings.driveSync.bookmarkPageUpdatedAt[docKey] = bookmarkPageUpdatedAt;
+  state.settings.driveSync.bookmarkUpdatedAt[docKey] = Math.max(
+    state.settings.driveSync.bookmarkUpdatedAt[docKey] ?? 0,
+    operationAt,
+  );
+}
+
+function applyCommentUpsertOperation(state: AppState, comment: StoredComment, operationAt: number): void {
+  const source = state.documentSources[comment.docKey];
+  if (!source || source.sourceKind !== 'drive') return;
+  const deletedAt = state.settings.driveSync.pendingCommentTombstones[comment.id] ?? 0;
+  if (deletedAt >= Math.max(comment.updatedAt, operationAt)) return;
+  const nextComment: StoredComment = {
+    ...comment,
+    pageIndex: clamp(comment.pageIndex, 0, source.pageCount - 1),
+  };
+  const existingIndex = state.studyData.comments.findIndex((existing) => existing.id === comment.id);
+  if (existingIndex >= 0) {
+    const existing = state.studyData.comments[existingIndex];
+    if (nextComment.updatedAt >= existing.updatedAt) {
+      state.studyData.comments[existingIndex] = nextComment;
+    }
+    return;
+  }
+  state.studyData.comments.push(nextComment);
+}
+
 function normalizeDriveSyncEnvelope(raw: unknown): DriveSyncEnvelope | null {
-  if (!isRecord(raw) || raw.app !== 'slide-study-drive-sync' || raw.schemaVersion !== DriveSyncSchemaVersion) {
+  if (
+    !isRecord(raw)
+    || raw.app !== 'slide-study-drive-sync'
+    || (raw.schemaVersion !== DriveSyncSchemaVersion && raw.schemaVersion !== LegacyDriveSyncSchemaVersion)
+  ) {
     return null;
   }
   return {
@@ -358,6 +581,7 @@ function normalizeDriveSyncEnvelope(raw: unknown): DriveSyncEnvelope | null {
     schemaVersion: DriveSyncSchemaVersion,
     updatedAt: timestampOr(raw.updatedAt, 0),
     updatedBy: textOr(raw.updatedBy, 'unknown-device'),
+    operations: normalizeSyncOperations(raw.operations),
     subjects: normalizeSubjects(raw.subjects),
     subjectTombstones: normalizeTimestampMap(raw.subjectTombstones),
     documents: normalizeSyncDocuments(raw.documents),
@@ -366,6 +590,128 @@ function normalizeDriveSyncEnvelope(raw: unknown): DriveSyncEnvelope | null {
     commentTombstones: normalizeTimestampMap(raw.commentTombstones),
     bookmarks: normalizeSyncBookmarks(raw.bookmarks),
   };
+}
+
+function normalizeSyncOperations(rawOperations: unknown): DriveSyncOperation[] {
+  if (!Array.isArray(rawOperations)) return [];
+  const seenIds = new Set<string>();
+
+  return rawOperations.flatMap((rawOperation): DriveSyncOperation[] => {
+    if (!isRecord(rawOperation)) return [];
+    const type = optionalText(rawOperation.type);
+    const deviceId = textOr(rawOperation.deviceId, 'unknown-device');
+    const seq = integerInRange(rawOperation.seq, 0, 0, Number.MAX_SAFE_INTEGER);
+    const createdAt = timestampOr(rawOperation.createdAt, 0);
+    const id = textOr(rawOperation.id, `${deviceId}:${seq}:${type ?? 'operation'}`);
+    if (createdAt <= 0 || seenIds.has(id)) return [];
+    seenIds.add(id);
+    const base = { id, deviceId, seq, createdAt };
+
+    if (type === 'subjectUpsert' && isRecord(rawOperation.subject)) {
+      const subject = Object.values(normalizeSubjects({ subject: rawOperation.subject }))[0];
+      return subject ? [{ ...base, type, subject }] : [];
+    }
+
+    if (type === 'subjectDelete') {
+      const subjectId = optionalText(rawOperation.subjectId);
+      return subjectId ? [{ ...base, type, subjectId }] : [];
+    }
+
+    if (type === 'documentUpsert' && isRecord(rawOperation.document) && isRecord(rawOperation.source)) {
+      const docKey = textOr(rawOperation.docKey, textOr(rawOperation.document.key, ''));
+      const source = normalizeDriveSource(rawOperation.source);
+      if (!docKey || !source) return [];
+      const updatedAt = timestampOr(rawOperation.document.updatedAt, timestampOr(rawOperation.document.createdAt, createdAt));
+      const rawReader = isRecord(rawOperation.reader) ? rawOperation.reader : {};
+      return [{
+        ...base,
+        type,
+        document: {
+          key: docKey,
+          title: textOr(rawOperation.document.title, source.fileName.replace(/\.pdf$/i, '') || 'Drive PDF'),
+          subjectId: optionalText(rawOperation.document.subjectId),
+          createdAt: timestampOr(rawOperation.document.createdAt, updatedAt),
+          updatedAt,
+        },
+        source,
+        reader: {
+          lastPageIndex: integerInRange(rawReader.lastPageIndex, 0, 0, source.pageCount - 1),
+          zoomMode: DefaultZoomMode,
+          manualZoom: DefaultManualZoom,
+        },
+      }];
+    }
+
+    if (type === 'documentDelete') {
+      const docKey = optionalText(rawOperation.docKey);
+      return docKey ? [{ ...base, type, docKey }] : [];
+    }
+
+    if (type === 'lastPageSet') {
+      const docKey = optionalText(rawOperation.docKey);
+      return docKey
+        ? [{ ...base, type, docKey, pageIndex: integerInRange(rawOperation.pageIndex, 0, 0, Number.MAX_SAFE_INTEGER) }]
+        : [];
+    }
+
+    if (type === 'bookmarkSet') {
+      const docKey = optionalText(rawOperation.docKey);
+      return docKey
+        ? [{
+          ...base,
+          type,
+          docKey,
+          pageIndex: integerInRange(rawOperation.pageIndex, 0, 0, Number.MAX_SAFE_INTEGER),
+          bookmarked: rawOperation.bookmarked === true,
+        }]
+        : [];
+    }
+
+    if (type === 'commentUpsert' && isRecord(rawOperation.comment)) {
+      const commentId = optionalText(rawOperation.comment.id);
+      const docKey = optionalText(rawOperation.comment.docKey);
+      const body = optionalText(rawOperation.comment.body);
+      if (!commentId || !docKey || !body) return [];
+      const updatedAt = timestampOr(rawOperation.comment.updatedAt, timestampOr(rawOperation.comment.createdAt, createdAt));
+      return [{
+        ...base,
+        type,
+        comment: {
+          id: commentId,
+          docKey,
+          pageIndex: integerInRange(rawOperation.comment.pageIndex, 0, 0, Number.MAX_SAFE_INTEGER),
+          body,
+          createdAt: timestampOr(rawOperation.comment.createdAt, updatedAt),
+          updatedAt,
+        },
+      }];
+    }
+
+    if (type === 'commentDelete') {
+      const commentId = optionalText(rawOperation.commentId);
+      const docKey = optionalText(rawOperation.docKey);
+      return commentId && docKey ? [{ ...base, type, commentId, docKey }] : [];
+    }
+
+    return [];
+  });
+}
+
+function compactDriveSyncOperations(operations: DriveSyncOperation[]): DriveSyncOperation[] {
+  const byId = new Map<string, DriveSyncOperation>();
+  operations.forEach((operation) => {
+    byId.set(operation.id, operation);
+  });
+  return Array.from(byId.values())
+    .sort(compareDriveSyncOperations)
+    .slice(-MaxStoredDriveSyncOperations);
+}
+
+function compareDriveSyncOperations(a: DriveSyncOperation, b: DriveSyncOperation): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  if (a.deviceId !== b.deviceId) return a.deviceId.localeCompare(b.deviceId);
+  if (a.seq !== b.seq) return a.seq - b.seq;
+  return a.id.localeCompare(b.id);
 }
 
 function normalizeSubjects(rawSubjects: unknown): Record<string, StoredSubject> {
