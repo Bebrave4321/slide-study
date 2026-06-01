@@ -285,7 +285,7 @@ function driveImportMessage(error: unknown, fallback: string): string {
   if (normalized.includes('missing config')) {
     return 'Google Drive is not configured for this build.';
   }
-  if (normalized.includes('sign-in was closed') || normalized.includes('popup_closed')) {
+  if (isGooglePopupOrAuthPause(normalized)) {
     return 'Google sign-in was closed. Try Drive again when you are ready.';
   }
   if (normalized.includes('could not load https://accounts.google.com') || normalized.includes('could not load https://apis.google.com')) {
@@ -306,7 +306,7 @@ function driveImportMessage(error: unknown, fallback: string): string {
 function driveSyncMessage(error: unknown, fallback: string): string {
   const message = errorMessage(error, fallback);
   const normalized = message.toLowerCase();
-  if (normalized.includes('sign-in was closed') || normalized.includes('popup_closed')) {
+  if (isGooglePopupOrAuthPause(normalized)) {
     return 'Sync paused. Click Sync now to reconnect.';
   }
   if (normalized.includes('could not read drive sync file')) {
@@ -325,6 +325,17 @@ function driveSyncMessage(error: unknown, fallback: string): string {
     return 'Could not load Google sign-in. Check the connection and try again.';
   }
   return message;
+}
+
+function isGooglePopupOrAuthPause(normalizedMessage: string): boolean {
+  return normalizedMessage.includes('sign-in was closed')
+    || normalizedMessage.includes('popup_closed')
+    || normalizedMessage.includes('popup_failed_to_open')
+    || normalizedMessage.includes('failed to open popup')
+    || normalizedMessage.includes('popup window')
+    || normalizedMessage.includes('blocked by the browser')
+    || normalizedMessage.includes('sign-in was closed or blocked')
+    || normalizedMessage.includes('interaction_required');
 }
 
 function syncStatusDetail(status: SyncStatusState, lastSyncedAt: number | null): string {
@@ -733,7 +744,12 @@ function App() {
       }
     } catch (error) {
       const message = driveSyncMessage(error, 'Could not sync with Google Drive.');
-      const paused = message.toLowerCase().includes('sign-in') || message.toLowerCase().includes('access');
+      const normalizedMessage = message.toLowerCase();
+      const paused = silent
+        || normalizedMessage.includes('sync paused')
+        || normalizedMessage.includes('sign-in')
+        || normalizedMessage.includes('access')
+        || isGooglePopupOrAuthPause(normalizedMessage);
       syncSessionReadyRef.current = false;
       setSyncStatus({ kind: paused ? 'paused' : 'failed', label: paused ? 'Sync paused' : 'Sync failed' });
       if (!silent) {
