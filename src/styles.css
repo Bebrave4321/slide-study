@@ -1404,6 +1404,12 @@ body.drive-picker-open {
   font-weight: 500;
 }
 
+.sync-status-card em {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-style: normal;
+}
+
 .sync-status-card.syncing {
   border-color: var(--accent);
 }

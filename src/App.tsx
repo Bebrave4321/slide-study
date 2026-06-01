@@ -124,6 +124,8 @@ type SyncStatusState = {
   label: string;
 };
 
+type SyncIssueKind = 'auth' | 'drive-read' | 'drive-save' | 'remote-data' | 'network' | 'config' | 'unknown';
+
 type SubjectMenuPosition = {
   top: number;
   left: number;
@@ -291,8 +293,17 @@ function driveImportMessage(error: unknown, fallback: string): string {
   if (normalized.includes('could not load https://accounts.google.com') || normalized.includes('could not load https://apis.google.com')) {
     return 'Could not load Google Drive. Check the connection and try again.';
   }
-  if (normalized.includes('could not download the drive pdf') || normalized.includes('(401)') || normalized.includes('(403)')) {
+  if (normalized.includes('(404)')) {
+    return 'Drive PDF was not found.';
+  }
+  if (normalized.includes('(401)') || normalized.includes('(403)')) {
     return 'Could not download this Drive PDF. Check that this Google account can open the file.';
+  }
+  if (normalized.includes('could not download the drive pdf')) {
+    return 'Could not download this Drive PDF.';
+  }
+  if (normalized.includes('failed to fetch') || normalized.includes('network')) {
+    return 'Network or Drive request failed.';
   }
   if (normalized.includes('google drive picker could not be loaded')) {
     return 'Google Drive Picker could not be loaded. Refresh the page and try again.';
@@ -327,6 +338,46 @@ function driveSyncMessage(error: unknown, fallback: string): string {
   return message;
 }
 
+function syncIssueKind(error: unknown, message: string): SyncIssueKind {
+  const rawMessage = errorMessage(error, message).toLowerCase();
+  const normalizedMessage = message.toLowerCase();
+  if (isGooglePopupOrAuthPause(rawMessage) || isGooglePopupOrAuthPause(normalizedMessage)) return 'auth';
+  if (rawMessage.includes('missing config') || normalizedMessage.includes('not configured')) return 'config';
+  if (rawMessage.includes('not a supported slide study sync file') || normalizedMessage.includes('reset remote')) return 'remote-data';
+  if (rawMessage.includes('could not save drive sync file') || normalizedMessage.includes('save drive sync data')) return 'drive-save';
+  if (
+    rawMessage.includes('could not read drive sync file')
+    || rawMessage.includes('could not download drive sync file')
+    || normalizedMessage.includes('read drive sync data')
+    || normalizedMessage.includes('download drive sync data')
+  ) return 'drive-read';
+  if (
+    rawMessage.includes('failed to fetch')
+    || rawMessage.includes('network')
+    || normalizedMessage.includes('check the connection')
+  ) return 'network';
+  return 'unknown';
+}
+
+function syncIssueLabel(issue: SyncIssueKind): string {
+  switch (issue) {
+    case 'auth':
+      return 'Google reconnect needed';
+    case 'drive-read':
+      return 'Drive could not read data';
+    case 'drive-save':
+      return 'Drive could not save data';
+    case 'remote-data':
+      return 'Remote data needs reset';
+    case 'network':
+      return 'Network or Drive request failed';
+    case 'config':
+      return 'Drive config missing';
+    default:
+      return 'Sync could not finish';
+  }
+}
+
 function isGooglePopupOrAuthPause(normalizedMessage: string): boolean {
   return normalizedMessage.includes('sign-in was closed')
     || normalizedMessage.includes('popup_closed')
@@ -341,11 +392,12 @@ function isGooglePopupOrAuthPause(normalizedMessage: string): boolean {
 function syncStatusDetail(status: SyncStatusState, lastSyncedAt: number | null): string {
   if (status.kind === 'paused') {
     return lastSyncedAt
-      ? `Click Sync now to reconnect. Last sync ${formatTime(lastSyncedAt)}`
-      : 'Click Sync now to connect.';
+      ? `Reconnect to sync. Last sync ${formatTime(lastSyncedAt)}`
+      : 'Connect to start syncing.';
   }
   if (status.kind === 'off') return 'Drive sync is off.';
   if (status.kind === 'syncing') return 'Working with Google Drive...';
+  if (status.kind === 'idle') return 'Waiting to upload changes...';
   if (status.kind === 'failed') return lastSyncedAt
     ? `Last sync ${formatTime(lastSyncedAt)}`
     : 'No sync completed yet.';
@@ -546,6 +598,7 @@ function App() {
   const [driveBusy, setDriveBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatusState>({ kind: 'off', label: 'Not connected' });
+  const [syncIssue, setSyncIssue] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
@@ -671,6 +724,7 @@ function App() {
       const message = `Drive sync is not configured for this build: ${driveConfigStatus.missing.join(', ')}.`;
       if (!silent) {
         setSyncStatus({ kind: 'failed', label: 'Config missing' });
+        setSyncIssue(syncIssueLabel('config'));
         setStatusText(message);
       }
       return;
@@ -679,6 +733,7 @@ function App() {
     syncBusyRef.current = true;
     setSyncBusy(true);
     setSyncStatus({ kind: 'syncing', label: silent ? 'Reconnecting...' : 'Syncing...' });
+    if (!silent) setSyncIssue(null);
     if (!silent) {
       setStatusText(userInitiated ? 'Syncing with Google Drive...' : 'Auto-syncing with Google Drive...');
     }
@@ -739,6 +794,7 @@ function App() {
       syncSessionReadyRef.current = true;
       setStored(finalState);
       setSyncStatus({ kind: 'synced', label: 'Synced' });
+      setSyncIssue(null);
       if (!silent) {
         setStatusText(resetRemote ? 'Remote sync data was reset.' : 'Drive sync complete.');
       }
@@ -752,6 +808,7 @@ function App() {
         || isGooglePopupOrAuthPause(normalizedMessage);
       syncSessionReadyRef.current = false;
       setSyncStatus({ kind: paused ? 'paused' : 'failed', label: paused ? 'Sync paused' : 'Sync failed' });
+      setSyncIssue(silent ? null : syncIssueLabel(syncIssueKind(error, message)));
       if (!silent) {
         setStatusText(message);
       }
@@ -770,6 +827,7 @@ function App() {
         label: stored.settings.driveSync.lastSyncedAt ? 'Sync paused' : 'Ready to sync',
       }
       : { kind: 'off', label: 'Not connected' });
+    if (!stored.settings.driveSync.enabled) setSyncIssue(null);
   }, [storageReady]);
 
   useEffect(() => {
@@ -802,6 +860,7 @@ function App() {
       window.clearTimeout(syncDebounceRef.current);
     }
     setSyncStatus({ kind: 'idle', label: 'Sync pending' });
+    setSyncIssue(null);
     syncDebounceRef.current = window.setTimeout(() => {
       syncDebounceRef.current = null;
       void runDriveSync();
@@ -1070,7 +1129,7 @@ function App() {
     preferredDocKey: string | null = null,
     statusKind: 'opened' | 'already-in-library' = 'opened',
   ) => {
-    setStatusText(`Loading ${driveFile.name} from Drive...`);
+    setStatusText(`Downloading ${driveFile.name}...`);
     let loaded: LoadedDrivePdf | null = null;
 
     try {
@@ -1121,7 +1180,7 @@ function App() {
         return;
       }
 
-      setStatusText(`Reading ${driveFile.name} from Drive...`);
+      setStatusText(`Downloading ${driveFile.name}...`);
       const loaded = await loadDrivePdf(driveFile, driveAuthOptions);
       const defaultSubjectId = stored.settings.selectedSubjectId && stored.settings.selectedSubjectId !== UnfiledSubjectId
         ? stored.settings.selectedSubjectId
@@ -1839,6 +1898,7 @@ function App() {
           syncEnabled={stored.settings.driveSync.enabled}
           syncBusy={syncBusy}
           syncStatus={syncStatus}
+          syncIssue={syncIssue}
           lastSyncedAt={stored.settings.driveSync.lastSyncedAt}
           onToggleCopySetting={updateCopySetting}
           onConnectSync={() => void runDriveSync({ userInitiated: true, enable: true })}
@@ -2939,6 +2999,7 @@ function SettingsDialog({
   syncEnabled,
   syncBusy,
   syncStatus,
+  syncIssue,
   lastSyncedAt,
   onToggleCopySetting,
   onConnectSync,
@@ -2954,6 +3015,7 @@ function SettingsDialog({
   syncEnabled: boolean;
   syncBusy: boolean;
   syncStatus: SyncStatusState;
+  syncIssue: string | null;
   lastSyncedAt: number | null;
   onToggleCopySetting: (key: VisibleCopySettingKey, value: boolean) => void;
   onConnectSync: () => void;
@@ -3025,6 +3087,9 @@ function SettingsDialog({
           <div className={`sync-status-card ${syncStatus.kind}`}>
             <span>{syncStatus.label}</span>
             <strong>{syncStatusDetail(syncStatus, lastSyncedAt)}</strong>
+            {syncIssue && (syncStatus.kind === 'failed' || syncStatus.kind === 'paused') && (
+              <em>{syncIssue}</em>
+            )}
           </div>
           <div className="settings-actions">
             <button
