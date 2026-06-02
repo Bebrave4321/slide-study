@@ -666,7 +666,7 @@ body.drive-picker-open {
 }
 
 .reader-layout {
-  height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
   display: grid;
   grid-template-columns: var(--thumb-width, 0px) minmax(0, 1fr) var(--study-width, 0px) 42px;
   gap: 6px;
@@ -694,7 +694,7 @@ body.drive-picker-open {
 }
 
 .reader-empty {
-  height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -996,6 +996,19 @@ body.drive-picker-open {
   gap: 12px;
 }
 
+.mini-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.mini-head-actions .ghost-btn,
+.mini-head-actions .primary-btn {
+  min-width: 62px;
+}
+
 .comment-list,
 .bookmark-list {
   min-height: 0;
@@ -1059,13 +1072,6 @@ body.drive-picker-open {
   outline: none;
   color: var(--text);
   background: var(--surface);
-}
-
-.composer-actions {
-  margin-top: 8px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 .empty-state {

@@ -3134,7 +3134,14 @@ function CommentsPanel({
           <div className="section-title">Page {pageIndex + 1}</div>
           <div className="muted">{comments.length} comment{comments.length === 1 ? '' : 's'}</div>
         </div>
-        {!composerOpen && (
+        {composerOpen ? (
+          <div className="mini-head-actions">
+            <button className="ghost-btn" onClick={onCancelComment}>Cancel</button>
+            <button className="primary-btn compact" disabled={!commentDraft.trim()} onClick={onSaveComment}>
+              {editingCommentId ? 'Save' : 'Add'}
+            </button>
+          </div>
+        ) : (
           <IconButton label="Add comment" icon={Plus} onClick={onOpenNewComment} />
         )}
       </div>
@@ -3159,12 +3166,6 @@ function CommentsPanel({
             onChange={(event) => onCommentDraftChange(event.target.value)}
             placeholder="Comment"
           />
-          <div className="composer-actions">
-            <button className="ghost-btn" onClick={onCancelComment}>Cancel</button>
-            <button className="primary-btn compact" disabled={!commentDraft.trim()} onClick={onSaveComment}>
-              {editingCommentId ? 'Save' : 'Add'}
-            </button>
-          </div>
         </div>
       )}
     </div>
