@@ -2663,7 +2663,6 @@ function ReaderScreen({
             </div>
           )}
         </section>
-        {studyOpen && <button className="mobile-study-backdrop" type="button" aria-label="Close Study Panel" onClick={onToggleStudy} />}
         {studyOpen ? (
           <StudyPanel
             pageIndex={pageIndex}
@@ -2691,6 +2690,11 @@ function ReaderScreen({
           onToggleBookmark={onToggleBookmark}
           onCopyPage={onCopyPage}
         />
+        <MobilePageNav
+          pageIndex={pageIndex}
+          pageCount={doc.pageCount}
+          onMovePage={onMovePage}
+        />
         <MobileReaderActions
           studyOpen={studyOpen}
           hasComments={comments.length > 0}
@@ -2702,6 +2706,37 @@ function ReaderScreen({
         />
       </section>
     </main>
+  );
+}
+
+function MobilePageNav({
+  pageIndex,
+  pageCount,
+  onMovePage,
+}: {
+  pageIndex: number;
+  pageCount: number;
+  onMovePage: (pageIndex: number) => void;
+}) {
+  return (
+    <nav className="mobile-page-nav" aria-label="Page navigation">
+      <IconButton
+        label="Previous page"
+        icon={ChevronLeft}
+        disabled={pageIndex <= 0}
+        onClick={() => onMovePage(pageIndex - 1)}
+      />
+      <div className="mobile-page-indicator" aria-live="polite">
+        <span>Page {pageIndex + 1}</span>
+        <span className="muted">/ {pageCount}</span>
+      </div>
+      <IconButton
+        label="Next page"
+        icon={ChevronRight}
+        disabled={pageIndex >= pageCount - 1}
+        onClick={() => onMovePage(pageIndex + 1)}
+      />
+    </nav>
   );
 }
 
@@ -3035,7 +3070,7 @@ function StudyPanel({
   onDeleteComment: (commentId: string) => void;
 }) {
   return (
-    <aside className="study-panel">
+    <aside className={`study-panel ${composerOpen ? 'composer-open' : ''}`}>
       <div className="panel-header">
         <div>
           <div className="section-title">Comments</div>

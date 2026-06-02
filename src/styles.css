@@ -939,6 +939,7 @@ body.drive-picker-open {
 }
 
 .mobile-reader-actions,
+.mobile-page-nav,
 .mobile-study-backdrop {
   display: none;
 }
@@ -1504,7 +1505,7 @@ body.drive-picker-open {
     min-height: 0;
     display: grid;
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr) auto auto auto;
     gap: 6px;
   }
 
@@ -1548,8 +1549,7 @@ body.drive-picker-open {
   }
 
   .reader-toolbar > .toolbar-group:first-of-type {
-    grid-column: 1;
-    grid-row: 2;
+    display: none;
   }
 
   .reader-toolbar > .toolbar-group:last-child {
@@ -1592,32 +1592,98 @@ body.drive-picker-open {
     grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
   }
 
-  .mobile-study-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 78;
-    display: block;
-    background: rgba(0, 0, 0, 0.26);
+  .study-panel {
+    max-height: min(24dvh, 172px);
+    min-height: 118px;
+    border-radius: 12px;
+    padding: 10px;
+    gap: 8px;
   }
 
-  .study-panel {
-    position: fixed;
-    left: max(8px, env(safe-area-inset-left));
-    right: max(8px, env(safe-area-inset-right));
-    bottom: calc(8px + env(safe-area-inset-bottom));
-    z-index: 82;
-    max-height: min(72dvh, 560px);
-    border-radius: 16px;
-    box-shadow: var(--shadow);
-    padding: 14px;
+  .study-panel .panel-header {
+    display: none;
+  }
+
+  .study-panel .panel-body {
+    overflow: hidden;
+    gap: 8px;
+  }
+
+  .study-panel .mini-head {
+    min-height: 32px;
   }
 
   .study-panel .comment-list {
-    max-height: 34dvh;
+    max-height: 66px;
+    flex: 0 1 auto;
+  }
+
+  .study-panel .comment-card,
+  .study-panel .empty-state {
+    padding: 8px;
+  }
+
+  .study-panel .comment-card p {
+    max-height: 42px;
+    overflow: auto;
+  }
+
+  .study-panel .comment-actions {
+    margin-top: 5px;
+  }
+
+  .study-panel .comment-actions .ghost-btn {
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .study-panel .composer {
+    padding: 8px;
+  }
+
+  .study-panel.composer-open {
+    max-height: min(38dvh, 272px);
+  }
+
+  .study-panel.composer-open .comment-list {
+    max-height: 44px;
   }
 
   .composer textarea {
-    min-height: 72px;
+    min-height: 58px;
+    max-height: 82px;
+  }
+
+  .mobile-page-nav {
+    min-height: 48px;
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr) 54px;
+    align-items: center;
+    gap: 8px;
+    padding: 4px max(6px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left));
+  }
+
+  .mobile-page-nav .icon-btn {
+    width: 100%;
+    height: 44px;
+    border-color: var(--border);
+    background: var(--surface-raised);
+  }
+
+  .mobile-page-indicator {
+    min-width: 0;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 720;
   }
 
   .mobile-reader-actions {
@@ -1687,6 +1753,10 @@ body.drive-picker-open {
     padding: 2px;
   }
 
+  .reader-toolbar > .toolbar-group:first-of-type {
+    display: none;
+  }
+
   .reader-toolbar > .toolbar-group .icon-btn {
     width: 28px;
     height: 28px;
@@ -1700,6 +1770,17 @@ body.drive-picker-open {
   .mobile-reader-actions {
     min-height: 48px;
     gap: 6px;
+  }
+
+  .mobile-page-nav {
+    min-height: 46px;
+    grid-template-columns: 50px minmax(0, 1fr) 50px;
+    gap: 6px;
+  }
+
+  .mobile-page-nav .icon-btn,
+  .mobile-page-indicator {
+    height: 42px;
   }
 
   .mobile-reader-actions .icon-btn {
