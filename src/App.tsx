@@ -2622,7 +2622,7 @@ function ReaderScreen({
             onToggleBookmarkedOnly={onToggleBookmarkedOnly}
             onMovePage={onMovePage}
           />
-        ) : <div />}
+        ) : <div className="thumbnail-panel-placeholder" aria-hidden="true" />}
         <section className="reader-main">
           <ReaderToolbar
             doc={doc}
@@ -2663,6 +2663,7 @@ function ReaderScreen({
             </div>
           )}
         </section>
+        {studyOpen && <button className="mobile-study-backdrop" type="button" aria-label="Close Study Panel" onClick={onToggleStudy} />}
         {studyOpen ? (
           <StudyPanel
             pageIndex={pageIndex}
@@ -2682,6 +2683,15 @@ function ReaderScreen({
           <div className="study-panel-placeholder" aria-hidden="true" />
         )}
         <StudyRail
+          studyOpen={studyOpen}
+          hasComments={comments.length > 0}
+          bookmarked={currentPageBookmarked}
+          onToggleStudy={onToggleStudy}
+          onOpenNewComment={onOpenNewComment}
+          onToggleBookmark={onToggleBookmark}
+          onCopyPage={onCopyPage}
+        />
+        <MobileReaderActions
           studyOpen={studyOpen}
           hasComments={comments.length > 0}
           bookmarked={currentPageBookmarked}
@@ -2967,6 +2977,33 @@ function StudyRail({
       <IconButton label={bookmarked ? 'Remove bookmark' : 'Bookmark page'} icon={Bookmark} active={bookmarked} onClick={onToggleBookmark} />
       <IconButton label="Copy text and page image" icon={Copy} onClick={onCopyPage} />
     </aside>
+  );
+}
+
+function MobileReaderActions({
+  studyOpen,
+  hasComments,
+  bookmarked,
+  onToggleStudy,
+  onOpenNewComment,
+  onToggleBookmark,
+  onCopyPage,
+}: {
+  studyOpen: boolean;
+  hasComments: boolean;
+  bookmarked: boolean;
+  onToggleStudy: () => void;
+  onOpenNewComment: () => void;
+  onToggleBookmark: () => void;
+  onCopyPage: () => void;
+}) {
+  return (
+    <nav className="mobile-reader-actions" aria-label="Reader actions">
+      <IconButton label={studyOpen ? 'Hide Study Panel' : 'Study Panel'} icon={studyOpen ? PanelRightClose : PanelRightOpen} active={studyOpen} onClick={onToggleStudy} />
+      <IconButton label="Add comment" icon={MessageSquare} active={hasComments} onClick={onOpenNewComment} />
+      <IconButton label={bookmarked ? 'Remove bookmark' : 'Bookmark page'} icon={Bookmark} active={bookmarked} onClick={onToggleBookmark} />
+      <IconButton label="Copy text and page image" icon={Copy} onClick={onCopyPage} />
+    </nav>
   );
 }
 
