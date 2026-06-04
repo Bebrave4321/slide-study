@@ -117,6 +117,12 @@ type DialogState =
     confirmLabel: string;
     danger?: boolean;
     onConfirm: () => void;
+  }
+  | {
+    type: 'info';
+    title: string;
+    description: string;
+    confirmLabel: string;
   };
 
 type SyncStatusKind = 'off' | 'paused' | 'idle' | 'syncing' | 'synced' | 'failed';
@@ -574,6 +580,24 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return (
+    tagName === 'input'
+    || tagName === 'textarea'
+    || tagName === 'select'
+    || tagName === 'button'
+    || tagName === 'a'
+    || (target instanceof HTMLElement && target.isContentEditable)
+    || Boolean(target.closest('button, a, [role="button"], [contenteditable="true"]'))
+  );
+}
+
+function hasOpenBlockingSurface(): boolean {
+  return Boolean(document.querySelector('.overflow-menu'));
 }
 
 type DriveSyncOperationInput = DriveSyncOperation extends infer Operation
@@ -1901,6 +1925,12 @@ function App() {
     setComposerOpen(true);
   }, []);
 
+  const cancelComment = useCallback(() => {
+    setComposerOpen(false);
+    setEditingCommentId(null);
+    setCommentDraft('');
+  }, []);
+
   const deleteComment = useCallback((commentId: string) => {
     setDialog({
       type: 'confirm',
@@ -1992,6 +2022,119 @@ function App() {
       setStatusText('Could not copy this page.');
     }
   }, [currentComments, currentRuntimePdf, pageIndex, selectedDoc, stored.settings.copySettings]);
+
+  const showShortcutHelp = useCallback(() => {
+    setDialog({
+      type: 'info',
+      title: 'Keyboard shortcuts',
+      description: [
+        '← / →  Previous / next page',
+        'B      Toggle bookmark',
+        'C      Copy current page',
+        'N      New comment',
+        'S      Show / hide Study Panel',
+        'Esc    Cancel comment or close Study Panel',
+        '?      Show this help',
+      ].join('\n'),
+      confirmLabel: 'Close',
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        screen !== 'reader'
+        || !selectedDoc
+        || settingsOpen
+        || pendingDriveImport
+        || dialog
+        || drivePickerOpen
+        || hasOpenBlockingSurface()
+        || event.ctrlKey
+        || event.metaKey
+        || event.altKey
+      ) {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        if (composerOpen) {
+          event.preventDefault();
+          cancelComment();
+          return;
+        }
+        if (studyOpen) {
+          event.preventDefault();
+          setStudyOpen(false);
+          return;
+        }
+        if (thumbnailsOpen) {
+          event.preventDefault();
+          setThumbnailsOpen(false);
+        }
+        return;
+      }
+
+      if (isEditableShortcutTarget(event.target)) return;
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        movePage(pageIndex - 1);
+        return;
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        movePage(pageIndex + 1);
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 'b') {
+        event.preventDefault();
+        toggleBookmark();
+        return;
+      }
+      if (key === 'c') {
+        event.preventDefault();
+        void copyPageStudyPacket();
+        return;
+      }
+      if (key === 'n') {
+        event.preventDefault();
+        openNewComment();
+        return;
+      }
+      if (key === 's') {
+        event.preventDefault();
+        setStudyOpen((open) => !open);
+        return;
+      }
+      if (event.key === '?') {
+        event.preventDefault();
+        showShortcutHelp();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    cancelComment,
+    composerOpen,
+    copyPageStudyPacket,
+    dialog,
+    drivePickerOpen,
+    movePage,
+    openNewComment,
+    pageIndex,
+    pendingDriveImport,
+    screen,
+    selectedDoc,
+    settingsOpen,
+    showShortcutHelp,
+    studyOpen,
+    thumbnailsOpen,
+    toggleBookmark,
+  ]);
 
   return (
     <div className="app-shell">
@@ -2092,11 +2235,7 @@ function App() {
           onOpenNewComment={openNewComment}
           onCommentDraftChange={setCommentDraft}
           onSaveComment={saveComment}
-          onCancelComment={() => {
-            setComposerOpen(false);
-            setEditingCommentId(null);
-            setCommentDraft('');
-          }}
+          onCancelComment={cancelComment}
           onEditComment={editComment}
           onDeleteComment={deleteComment}
         />
@@ -2153,7 +2292,7 @@ function TopBar({
   onToggleTheme: () => void;
 }) {
   return (
-    <header className="topbar">
+    <header className={`topbar ${screen === 'reader' ? 'reader-topbar' : ''}`}>
       <div className="brand">Slide Study</div>
       <div className="location">{screen === 'reader' ? 'Reader' : 'Library'}</div>
       <div className="status">{statusText}</div>
@@ -2600,7 +2739,7 @@ function ReaderScreen({
 
   if (!doc) {
     return (
-      <main className="content">
+      <main className="content reader-content">
         <div className="reader-empty">
           <strong>No PDF selected.</strong>
           <button className="primary-btn" onClick={onRequestPdf}>Add PDF</button>
@@ -2610,7 +2749,7 @@ function ReaderScreen({
   }
 
   return (
-    <main className="content">
+    <main className="content reader-content">
       <section className={layoutClass}>
         {thumbnailsOpen ? (
           <ThumbnailPanel
@@ -3464,6 +3603,10 @@ function AppDialog({ dialog, onClose }: { dialog: DialogState; onClose: () => vo
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
+    if (dialog.type === 'info') {
+      onClose();
+      return;
+    }
     if (dialog.type === 'text') {
       const normalized = value.trim();
       if (!normalized) return;
@@ -3480,7 +3623,7 @@ function AppDialog({ dialog, onClose }: { dialog: DialogState; onClose: () => vo
       <form className="app-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
         <div>
           <h2>{dialog.title}</h2>
-          <p>{dialog.description}</p>
+          <p className={dialog.type === 'info' ? 'dialog-description preserve-lines' : 'dialog-description'}>{dialog.description}</p>
         </div>
         {dialog.type === 'text' && (
           <label className="dialog-field">
@@ -3496,7 +3639,9 @@ function AppDialog({ dialog, onClose }: { dialog: DialogState; onClose: () => vo
           </label>
         )}
         <div className="dialog-actions">
-          <button type="button" className="ghost-btn" onClick={onClose}>Cancel</button>
+          {dialog.type !== 'info' && (
+            <button type="button" className="ghost-btn" onClick={onClose}>Cancel</button>
+          )}
           <button
             type="submit"
             className={`primary-btn compact ${dialog.type === 'confirm' && dialog.danger ? 'danger-primary' : ''}`}

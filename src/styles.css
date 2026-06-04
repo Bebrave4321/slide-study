@@ -1043,6 +1043,11 @@ body.drive-picker-open {
   line-height: 1.45;
 }
 
+.comment-card p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .copy-block p {
   margin-top: 8px;
   color: var(--text-muted);
@@ -1137,6 +1142,10 @@ body.drive-picker-open {
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.preserve-lines {
+  white-space: pre-line;
 }
 
 .dialog-field {
@@ -1451,12 +1460,31 @@ body.drive-picker-open {
     padding: 0 10px;
   }
 
+  .topbar.reader-topbar {
+    height: 34px;
+    gap: 8px;
+    padding: 0 8px;
+  }
+
   .brand {
     font-size: 20px;
   }
 
+  .reader-topbar .brand {
+    font-size: 16px;
+  }
+
   .location {
     display: none;
+  }
+
+  .reader-topbar .status {
+    display: none;
+  }
+
+  .reader-topbar .icon-btn {
+    width: 30px;
+    height: 30px;
   }
 
   .status {
@@ -1465,6 +1493,10 @@ body.drive-picker-open {
 
   .content {
     padding: 5px 6px 8px;
+  }
+
+  .reader-content {
+    padding: 4px 6px 6px;
   }
 
   .library-layout {
@@ -1507,7 +1539,7 @@ body.drive-picker-open {
   }
 
   .reader-layout {
-    height: calc(100dvh - 57px);
+    height: 100%;
     min-height: 0;
     display: grid;
     grid-template-columns: 1fr;
@@ -1530,16 +1562,16 @@ body.drive-picker-open {
     min-height: 0;
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr) 34px;
-    grid-template-rows: 34px 36px;
+    grid-template-rows: 30px 31px;
     align-items: center;
-    gap: 5px;
-    padding: 5px;
+    gap: 4px;
+    padding: 4px;
     border-radius: 10px;
   }
 
   .reader-toolbar .icon-btn {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
 
   .reader-toolbar .doc-meta {
@@ -1547,11 +1579,11 @@ body.drive-picker-open {
   }
 
   .doc-title {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .reader-toolbar > .toolbar-group {
-    height: 34px;
+    height: 31px;
   }
 
   .reader-toolbar > .toolbar-group:first-of-type {
@@ -1570,8 +1602,8 @@ body.drive-picker-open {
   }
 
   .reader-toolbar .zoom-label {
-    min-width: 40px;
-    font-size: 12px;
+    min-width: 34px;
+    font-size: 11px;
   }
 
   .pdf-stage {
@@ -1721,8 +1753,16 @@ body.drive-picker-open {
     gap: 8px;
   }
 
+  .topbar.reader-topbar {
+    height: 32px;
+  }
+
   .brand {
     font-size: 18px;
+  }
+
+  .reader-topbar .brand {
+    font-size: 15px;
   }
 
   .status {
@@ -1744,18 +1784,18 @@ body.drive-picker-open {
 
   .reader-toolbar {
     grid-template-columns: 32px minmax(0, 1fr) 32px;
-    grid-template-rows: 32px 34px;
-    gap: 4px;
-    padding: 4px;
+    grid-template-rows: 29px 30px;
+    gap: 3px;
+    padding: 3px;
   }
 
   .reader-toolbar .icon-btn {
-    width: 30px;
-    height: 30px;
+    width: 29px;
+    height: 29px;
   }
 
   .reader-toolbar > .toolbar-group {
-    height: 32px;
+    height: 30px;
     padding: 2px;
   }
 
@@ -1764,8 +1804,8 @@ body.drive-picker-open {
   }
 
   .reader-toolbar > .toolbar-group .icon-btn {
-    width: 28px;
-    height: 28px;
+    width: 27px;
+    height: 27px;
   }
 
   .reader-toolbar .zoom-label {
