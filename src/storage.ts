@@ -81,6 +81,11 @@ export type DriveSyncSettingsState = {
   bookmarkPageUpdatedAt: Record<string, Record<string, number>>;
 };
 
+export type ReaderSettingsState = {
+  studyPanelWidth: number;
+  mobileStudyPanelHeight: number;
+};
+
 export type StoredSubject = {
   id: string;
   name: string;
@@ -136,6 +141,7 @@ export type AppSettingsState = {
   selectedSubjectId: string | null;
   sortMode: SortMode;
   copySettings: CopyPacketOptions;
+  readerSettings: ReaderSettingsState;
   driveAuth: DriveAuthSettingsState;
   driveSync: DriveSyncSettingsState;
 };
@@ -185,6 +191,12 @@ export const DefaultZoomMode: ZoomMode = 'fitPage';
 export const DefaultManualZoom = 1.15;
 export const MinManualZoom = 0.25;
 export const MaxStoredManualZoom = 4;
+export const StudyPanelWidthMin = 280;
+export const StudyPanelWidthMax = 560;
+export const StudyPanelWidthStep = 40;
+export const MobileStudyPanelHeightMin = 118;
+export const MobileStudyPanelHeightMax = 260;
+export const MobileStudyPanelHeightStep = 24;
 export const FutureStudyDataSlots = ['track', 'transcript', 'timeline'] as const;
 
 export const DefaultCopyPacketOptions: CopyPacketOptions = {
@@ -194,6 +206,11 @@ export const DefaultCopyPacketOptions: CopyPacketOptions = {
   includeTrack: false,
   includeTimeline: false,
   includeFixedPrompt: false,
+};
+
+export const DefaultReaderSettings: ReaderSettingsState = {
+  studyPanelWidth: 380,
+  mobileStudyPanelHeight: 172,
 };
 
 export const DefaultDriveAuthSettings: DriveAuthSettingsState = {
@@ -238,6 +255,7 @@ export function createInitialAppState(): AppState {
       selectedSubjectId: null,
       sortMode: 'recent',
       copySettings: DefaultCopyPacketOptions,
+      readerSettings: DefaultReaderSettings,
       driveAuth: DefaultDriveAuthSettings,
       driveSync: {
         ...DefaultDriveSyncSettings,
@@ -632,6 +650,23 @@ function normalizeCopySettings(settings?: AppStateRecord): CopyPacketOptions {
   };
 }
 
+function normalizeReaderSettings(settings?: AppStateRecord): ReaderSettingsState {
+  return {
+    studyPanelWidth: integerInRange(
+      settings?.studyPanelWidth,
+      DefaultReaderSettings.studyPanelWidth,
+      StudyPanelWidthMin,
+      StudyPanelWidthMax,
+    ),
+    mobileStudyPanelHeight: integerInRange(
+      settings?.mobileStudyPanelHeight,
+      DefaultReaderSettings.mobileStudyPanelHeight,
+      MobileStudyPanelHeightMin,
+      MobileStudyPanelHeightMax,
+    ),
+  };
+}
+
 function normalizeSubjects(rawSubjects: unknown, now: number): Record<string, StoredSubject> {
   if (!isRecord(rawSubjects)) return {};
   const subjects: Record<string, StoredSubject> = {};
@@ -744,6 +779,7 @@ function normalizeAppSettings(
     selectedSubjectId,
     sortMode: normalizeSortMode(settings.sortMode),
     copySettings: normalizeCopySettings(isRecord(settings.copySettings) ? settings.copySettings : undefined),
+    readerSettings: normalizeReaderSettings(isRecord(settings.readerSettings) ? settings.readerSettings : undefined),
     driveAuth: normalizeDriveAuthSettings(isRecord(settings.driveAuth) ? settings.driveAuth : undefined),
     driveSync: normalizeDriveSyncSettings(isRecord(settings.driveSync) ? settings.driveSync : undefined),
   };

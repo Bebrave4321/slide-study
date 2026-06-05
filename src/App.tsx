@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type SetStateAction } from 'react';
 import {
   ArrowLeft,
   ArrowUpDown,
@@ -16,6 +16,7 @@ import {
   Link2,
   Maximize2,
   MessageSquare,
+  Minus,
   Moon,
   MoreHorizontal,
   Power,
@@ -48,7 +49,13 @@ import {
 import {
   DefaultManualZoom,
   DefaultZoomMode,
+  MobileStudyPanelHeightMax,
+  MobileStudyPanelHeightMin,
+  MobileStudyPanelHeightStep,
   MinManualZoom,
+  StudyPanelWidthMax,
+  StudyPanelWidthMin,
+  StudyPanelWidthStep,
   UnfiledSubjectId,
   clamp,
   composeStoredDocument,
@@ -67,6 +74,7 @@ import {
   type DocumentSourceMetadata,
   type DocumentSourceKind,
   type DriveSyncOperation,
+  type ReaderSettingsState,
   type SortMode,
   type StoredComment,
   type StoredDocument,
@@ -1480,6 +1488,22 @@ function App() {
     }));
   }, []);
 
+  const updateReaderSetting = useCallback((key: keyof ReaderSettingsState, value: number) => {
+    const nextValue = key === 'studyPanelWidth'
+      ? clamp(value, StudyPanelWidthMin, StudyPanelWidthMax)
+      : clamp(value, MobileStudyPanelHeightMin, MobileStudyPanelHeightMax);
+    setStored((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        readerSettings: {
+          ...prev.settings.readerSettings,
+          [key]: Math.round(nextValue),
+        },
+      },
+    }));
+  }, []);
+
   const exportSyncData = useCallback(() => {
     try {
       const syncEnvelope = createDriveSyncEnvelope(stored);
@@ -2211,6 +2235,7 @@ function App() {
           manualZoom={currentManualZoom}
           zoomMetrics={zoomMetrics}
           renderScalePercent={renderScalePercent}
+          readerSettings={stored.settings.readerSettings}
           thumbnailsOpen={thumbnailsOpen}
           bookmarkedOnly={bookmarkedOnly}
           studyOpen={studyOpen}
@@ -2243,6 +2268,7 @@ function App() {
       {settingsOpen && (
         <SettingsDialog
           copySettings={stored.settings.copySettings}
+          readerSettings={stored.settings.readerSettings}
           syncEnabled={stored.settings.driveSync.enabled}
           syncBusy={syncBusy}
           syncStatus={syncStatus}
@@ -2257,6 +2283,7 @@ function App() {
           onExportBackup={exportBackup}
           onImportBackup={() => backupInputRef.current?.click()}
           onClose={() => setSettingsOpen(false)}
+          onUpdateReaderSetting={updateReaderSetting}
         />
       )}
       {pendingDriveImport && (
@@ -2665,6 +2692,7 @@ function ReaderScreen({
   manualZoom,
   zoomMetrics,
   renderScalePercent,
+  readerSettings,
   thumbnailsOpen,
   bookmarkedOnly,
   studyOpen,
@@ -2700,6 +2728,7 @@ function ReaderScreen({
   manualZoom: number;
   zoomMetrics: ZoomMetrics;
   renderScalePercent: number;
+  readerSettings: ReaderSettingsState;
   thumbnailsOpen: boolean;
   bookmarkedOnly: boolean;
   studyOpen: boolean;
@@ -2734,6 +2763,10 @@ function ReaderScreen({
     studyOpen ? 'study-open' : '',
     studyOpen ? 'study-normal' : '',
   ].join(' ');
+  const layoutStyle = {
+    '--study-width': `${readerSettings.studyPanelWidth}px`,
+    '--mobile-study-panel-height': `${readerSettings.mobileStudyPanelHeight}px`,
+  } as CSSProperties;
   const canZoomOut = zoomMetrics.effectiveZoom > zoomMetrics.minManualZoom + 0.004;
   const canZoomIn = zoomMetrics.effectiveZoom < zoomMetrics.maxManualZoom - 0.004;
 
@@ -2750,7 +2783,7 @@ function ReaderScreen({
 
   return (
     <main className="content reader-content">
-      <section className={layoutClass}>
+      <section className={layoutClass} style={layoutStyle}>
         {thumbnailsOpen ? (
           <ThumbnailPanel
             doc={doc}
@@ -3417,6 +3450,7 @@ function DriveImportDialog({
 
 function SettingsDialog({
   copySettings,
+  readerSettings,
   syncEnabled,
   syncBusy,
   syncStatus,
@@ -3431,8 +3465,10 @@ function SettingsDialog({
   onExportBackup,
   onImportBackup,
   onClose,
+  onUpdateReaderSetting,
 }: {
   copySettings: CopyPacketOptions;
+  readerSettings: ReaderSettingsState;
   syncEnabled: boolean;
   syncBusy: boolean;
   syncStatus: SyncStatusState;
@@ -3447,8 +3483,13 @@ function SettingsDialog({
   onExportBackup: () => void;
   onImportBackup: () => void;
   onClose: () => void;
+  onUpdateReaderSetting: (key: keyof ReaderSettingsState, value: number) => void;
 }) {
   const [dataManagementOpen, setDataManagementOpen] = useState(false);
+  const canDecreasePanelWidth = readerSettings.studyPanelWidth > StudyPanelWidthMin;
+  const canIncreasePanelWidth = readerSettings.studyPanelWidth < StudyPanelWidthMax;
+  const canDecreaseMobilePanelHeight = readerSettings.mobileStudyPanelHeight > MobileStudyPanelHeightMin;
+  const canIncreaseMobilePanelHeight = readerSettings.mobileStudyPanelHeight < MobileStudyPanelHeightMax;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3501,6 +3542,65 @@ function SettingsDialog({
                 <span />
               </span>
             </button>
+          </div>
+        </div>
+        <div className="settings-section">
+          <div className="settings-section-title">Reader</div>
+          <div className="settings-list">
+            <div className="setting-row static-row">
+              <span>
+                <strong>Study panel width</strong>
+                <span>Desktop and tablet landscape</span>
+              </span>
+              <div className="setting-stepper" aria-label="Study panel width">
+                <IconButton
+                  label="Narrower Study Panel"
+                  icon={Minus}
+                  disabled={!canDecreasePanelWidth}
+                  onClick={() => onUpdateReaderSetting(
+                    'studyPanelWidth',
+                    readerSettings.studyPanelWidth - StudyPanelWidthStep,
+                  )}
+                />
+                <strong>{readerSettings.studyPanelWidth}px</strong>
+                <IconButton
+                  label="Wider Study Panel"
+                  icon={Plus}
+                  disabled={!canIncreasePanelWidth}
+                  onClick={() => onUpdateReaderSetting(
+                    'studyPanelWidth',
+                    readerSettings.studyPanelWidth + StudyPanelWidthStep,
+                  )}
+                />
+              </div>
+            </div>
+            <div className="setting-row static-row">
+              <span>
+                <strong>Mobile panel height</strong>
+                <span>Mobile and portrait tablet Reader</span>
+              </span>
+              <div className="setting-stepper" aria-label="Mobile panel height">
+                <IconButton
+                  label="Shorter Mobile Panel"
+                  icon={Minus}
+                  disabled={!canDecreaseMobilePanelHeight}
+                  onClick={() => onUpdateReaderSetting(
+                    'mobileStudyPanelHeight',
+                    readerSettings.mobileStudyPanelHeight - MobileStudyPanelHeightStep,
+                  )}
+                />
+                <strong>{readerSettings.mobileStudyPanelHeight}px</strong>
+                <IconButton
+                  label="Taller Mobile Panel"
+                  icon={Plus}
+                  disabled={!canIncreaseMobilePanelHeight}
+                  onClick={() => onUpdateReaderSetting(
+                    'mobileStudyPanelHeight',
+                    readerSettings.mobileStudyPanelHeight + MobileStudyPanelHeightStep,
+                  )}
+                />
+              </div>
+            </div>
           </div>
         </div>
         <div className="settings-section">

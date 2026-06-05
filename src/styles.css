@@ -1347,6 +1347,10 @@ body.drive-picker-open {
   cursor: pointer;
 }
 
+.setting-row.static-row {
+  cursor: default;
+}
+
 .setting-row-button {
   width: 100%;
   font: inherit;
@@ -1356,6 +1360,11 @@ body.drive-picker-open {
 .setting-row:hover {
   border-color: var(--border-strong);
   background: var(--surface-soft);
+}
+
+.setting-row.static-row:hover {
+  border-color: var(--border);
+  background: var(--surface-raised);
 }
 
 .setting-row > span:first-child {
@@ -1372,6 +1381,22 @@ body.drive-picker-open {
 .setting-row > span:first-child span {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.setting-stepper {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 34px minmax(64px, auto) 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.setting-stepper strong {
+  min-width: 62px;
+  color: var(--text);
+  text-align: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .setting-toggle {
@@ -1631,7 +1656,8 @@ body.drive-picker-open {
   }
 
   .study-panel {
-    max-height: min(24dvh, 172px);
+    height: min(var(--mobile-study-panel-height, 172px), 40dvh);
+    max-height: min(var(--mobile-study-panel-height, 172px), 40dvh);
     min-height: 118px;
     border-radius: 12px;
     padding: 10px;
@@ -1681,7 +1707,8 @@ body.drive-picker-open {
   }
 
   .study-panel.composer-open {
-    max-height: min(38dvh, 272px);
+    height: min(max(var(--mobile-study-panel-height, 172px), 220px), 42dvh);
+    max-height: min(max(var(--mobile-study-panel-height, 172px), 220px), 42dvh);
   }
 
   .study-panel.composer-open .comment-list {
@@ -1767,6 +1794,17 @@ body.drive-picker-open {
 
   .status {
     max-width: 32vw;
+  }
+
+  .setting-row.static-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .setting-stepper {
+    width: 100%;
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
   }
 
   .library-main {
