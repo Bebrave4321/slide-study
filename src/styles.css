@@ -668,6 +668,7 @@ body.drive-picker-open {
 .reader-layout {
   height: calc(100dvh - 64px);
   display: grid;
+  --study-width: 0px;
   grid-template-columns: var(--thumb-width, 0px) minmax(0, 1fr) var(--study-width, 0px) 42px;
   gap: 6px;
   transition: grid-template-columns 160ms ease;
@@ -678,19 +679,7 @@ body.drive-picker-open {
 }
 
 .reader-layout.study-open {
-  --study-width: 380px;
-}
-
-.reader-layout.study-open.study-narrow {
-  --study-width: 320px;
-}
-
-.reader-layout.study-open.study-normal {
-  --study-width: 380px;
-}
-
-.reader-layout.study-open.study-wide {
-  --study-width: 460px;
+  --study-width: var(--configured-study-width, 380px);
 }
 
 .reader-empty {
@@ -1180,6 +1169,9 @@ body.drive-picker-open {
 
 .settings-dialog {
   width: min(480px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .drive-import-dialog {
@@ -1678,8 +1670,9 @@ body.drive-picker-open {
   }
 
   .study-panel .comment-list {
-    max-height: 66px;
-    flex: 0 1 auto;
+    flex: 1 1 auto;
+    max-height: none;
+    min-height: 0;
   }
 
   .study-panel .comment-card,
@@ -1688,7 +1681,7 @@ body.drive-picker-open {
   }
 
   .study-panel .comment-card p {
-    max-height: 42px;
+    max-height: clamp(42px, calc(var(--mobile-study-panel-height, 172px) - 112px), 148px);
     overflow: auto;
   }
 
@@ -1712,6 +1705,7 @@ body.drive-picker-open {
   }
 
   .study-panel.composer-open .comment-list {
+    flex: 0 0 auto;
     max-height: 44px;
   }
 
@@ -1776,6 +1770,18 @@ body.drive-picker-open {
 }
 
 @media (max-width: 520px) {
+  .dialog-backdrop {
+    align-items: flex-start;
+    padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+  }
+
+  .app-dialog {
+    max-height: calc(100dvh - 20px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    gap: 14px;
+    padding: 16px;
+    border-radius: 14px;
+  }
+
   .topbar {
     gap: 8px;
   }

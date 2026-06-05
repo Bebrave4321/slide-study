@@ -2761,10 +2761,9 @@ function ReaderScreen({
     'reader-layout',
     thumbnailsOpen ? 'thumbs-open' : '',
     studyOpen ? 'study-open' : '',
-    studyOpen ? 'study-normal' : '',
   ].join(' ');
   const layoutStyle = {
-    '--study-width': `${readerSettings.studyPanelWidth}px`,
+    '--configured-study-width': `${readerSettings.studyPanelWidth}px`,
     '--mobile-study-panel-height': `${readerSettings.mobileStudyPanelHeight}px`,
   } as CSSProperties;
   const canZoomOut = zoomMetrics.effectiveZoom > zoomMetrics.minManualZoom + 0.004;
