@@ -2392,6 +2392,16 @@ function LibraryScreen({
   onRemoveDoc: (doc: StoredDocument) => void;
 }) {
   const unfiledCount = allDocs.filter((doc) => !doc.subjectId).length;
+  const subjectCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    subjects.forEach((subject) => {
+      counts[subject.id] = 0;
+    });
+    allDocs.forEach((doc) => {
+      if (doc.subjectId && counts[doc.subjectId] !== undefined) counts[doc.subjectId] += 1;
+    });
+    return counts;
+  }, [allDocs, subjects]);
   const selectedSubject = selectedSubjectId ? subjects.find((subject) => subject.id === selectedSubjectId) : null;
   const driveDisabled = !driveConfigured || driveBusy;
   const driveTitle = driveBusy
@@ -2430,7 +2440,7 @@ function LibraryScreen({
                 key={subject.id}
                 subject={subject}
                 active={selectedSubjectId === subject.id}
-                count={allDocs.filter((doc) => doc.subjectId === subject.id).length}
+                count={subjectCounts[subject.id] ?? 0}
                 onSelect={onSelectSubject}
                 onRename={onRenameSubject}
                 onDelete={onDeleteSubject}
@@ -2463,6 +2473,36 @@ function LibraryScreen({
               <button className="primary-btn" onClick={onAddPdf}>
                 <Upload size={16} />
                 Add PDF
+              </button>
+            </div>
+          </div>
+          <div className="mobile-library-controls">
+            <label className="search-box mobile-search-box">
+              <Search size={15} />
+              <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search PDFs" />
+            </label>
+            <div className="mobile-subject-strip" aria-label="Subjects">
+              <button className={`subject-chip ${selectedSubjectId === null ? 'active' : ''}`} onClick={() => onSelectSubject(null)}>
+                <span>All</span>
+                <strong>{allDocs.length}</strong>
+              </button>
+              <button className={`subject-chip ${selectedSubjectId === UnfiledSubjectId ? 'active' : ''}`} onClick={() => onSelectSubject(UnfiledSubjectId)}>
+                <span>Unfiled</span>
+                <strong>{unfiledCount}</strong>
+              </button>
+              {subjects.map((subject) => (
+                <button
+                  key={subject.id}
+                  className={`subject-chip ${selectedSubjectId === subject.id ? 'active' : ''}`}
+                  onClick={() => onSelectSubject(subject.id)}
+                >
+                  <span>{subject.name}</span>
+                  <strong>{subjectCounts[subject.id] ?? 0}</strong>
+                </button>
+              ))}
+              <button className="subject-chip add-subject-chip" onClick={onCreateSubject} aria-label="Add subject">
+                <FolderPlus size={14} />
+                <span>Add</span>
               </button>
             </div>
           </div>
