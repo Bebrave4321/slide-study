@@ -1064,6 +1064,24 @@ body.drive-picker-open {
   gap: 6px;
 }
 
+.comment-inline-editor {
+  width: 100%;
+  min-height: 118px;
+  max-height: min(220px, 32dvh);
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  outline: none;
+  color: var(--text);
+  background: var(--surface);
+  line-height: 1.45;
+}
+
+.comment-inline-editor:focus {
+  border-color: var(--accent);
+}
+
 .composer {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -1873,6 +1891,12 @@ body.drive-picker-open {
     font-size: 12px;
   }
 
+  .comment-inline-editor {
+    min-height: 74px;
+    max-height: clamp(82px, calc(var(--mobile-study-panel-height, 172px) - 86px), 142px);
+    resize: vertical;
+  }
+
   .study-panel .composer {
     padding: 8px;
   }
@@ -2099,5 +2123,10 @@ body.drive-picker-open {
   .composer textarea {
     min-height: 48px;
     max-height: 68px;
+  }
+
+  .comment-inline-editor {
+    min-height: 58px;
+    max-height: 92px;
   }
 }

@@ -1946,7 +1946,7 @@ function App() {
     setStudyOpen(true);
     setEditingCommentId(comment.id);
     setCommentDraft(comment.body);
-    setComposerOpen(true);
+    setComposerOpen(false);
   }, []);
 
   const cancelComment = useCallback(() => {
@@ -3364,6 +3364,10 @@ function CommentsPanel({
             key={comment.id}
             comment={comment}
             selected={editingCommentId === comment.id}
+            draft={editingCommentId === comment.id ? commentDraft : comment.body}
+            onDraftChange={onCommentDraftChange}
+            onSave={onSaveComment}
+            onCancel={onCancelComment}
             onEdit={onEditComment}
             onDelete={onDeleteComment}
           />
@@ -3386,21 +3390,53 @@ function CommentsPanel({
 function CommentCard({
   comment,
   selected,
+  draft,
+  onDraftChange,
+  onSave,
+  onCancel,
   onEdit,
   onDelete,
 }: {
   comment: StoredComment;
   selected: boolean;
+  draft: string;
+  onDraftChange: (value: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
   onEdit: (comment: StoredComment) => void;
   onDelete: (commentId: string) => void;
 }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (selected) textareaRef.current?.focus();
+  }, [selected]);
+
   return (
     <article className={`comment-card ${selected ? 'active' : ''}`}>
-      <p>{comment.body}</p>
-      <div className="comment-actions">
-        <button className="ghost-btn" onClick={() => onEdit(comment)}>Edit</button>
-        <button className="ghost-btn danger" onClick={() => onDelete(comment.id)}>Delete</button>
-      </div>
+      {selected ? (
+        <>
+          <textarea
+            ref={textareaRef}
+            className="comment-inline-editor"
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            placeholder="Comment"
+          />
+          <div className="comment-actions">
+            <button className="ghost-btn" onClick={onCancel}>Cancel</button>
+            <button className="primary-btn compact" disabled={!draft.trim()} onClick={onSave}>Save</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p>{comment.body}</p>
+          <div className="comment-actions">
+            <button className="ghost-btn" onClick={() => onEdit(comment)}>Edit</button>
+            <button className="ghost-btn danger" onClick={() => onDelete(comment.id)}>Delete</button>
+          </div>
+        </>
+      )}
     </article>
   );
 }
