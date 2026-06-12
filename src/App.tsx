@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type SetStateAction } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type SetStateAction,
+} from 'react';
 import {
   ArrowLeft,
   ArrowUpDown,
@@ -49,6 +59,7 @@ import {
 import {
   DefaultManualZoom,
   DefaultZoomMode,
+  MaxStoredManualZoom,
   MobileStudyPanelHeightMax,
   MobileStudyPanelHeightMin,
   MobileStudyPanelHeightStep,
@@ -177,6 +188,7 @@ type SourceConnectionInfo = {
 };
 
 const ZoomStep = 0.05;
+const MaxPdfRenderPixels = 16_000_000;
 const SubjectMenuWidth = 176;
 const SubjectMenuEstimatedHeight = 92;
 const MaxClipboardHistoryItemBytes = 4 * 1024 * 1024;
@@ -602,6 +614,36 @@ function isEditableShortcutTarget(target: EventTarget | null): boolean {
     || (target instanceof HTMLElement && target.isContentEditable)
     || Boolean(target.closest('button, a, [role="button"], [contenteditable="true"]'))
   );
+}
+
+function submitCommentOnShiftEnter(
+  event: ReactKeyboardEvent<HTMLTextAreaElement>,
+  value: string,
+  onSubmit: () => void,
+): void {
+  if (
+    event.key !== 'Enter'
+    || !event.shiftKey
+    || event.nativeEvent.isComposing
+    || !value.trim()
+  ) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  onSubmit();
+}
+
+function resizeCommentEditor(textarea: HTMLTextAreaElement): void {
+  textarea.style.height = 'auto';
+  const maxHeight = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+  const nextHeight = Number.isFinite(maxHeight)
+    ? Math.min(textarea.scrollHeight, maxHeight)
+    : textarea.scrollHeight;
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = Number.isFinite(maxHeight) && textarea.scrollHeight > maxHeight
+    ? 'auto'
+    : 'hidden';
 }
 
 function hasOpenBlockingSurface(): boolean {
@@ -1949,6 +1991,15 @@ function App() {
     setComposerOpen(false);
   }, []);
 
+  const editLatestComment = useCallback(() => {
+    const latestComment = currentComments[0];
+    if (!latestComment) {
+      setStatusText('No comments on this page to edit.');
+      return;
+    }
+    editComment(latestComment);
+  }, [currentComments, editComment]);
+
   const cancelComment = useCallback(() => {
     setComposerOpen(false);
     setEditingCommentId(null);
@@ -2055,8 +2106,10 @@ function App() {
         '← / →  Previous / next page',
         'B      Toggle bookmark',
         'C      Copy current page',
+        'E      Edit latest comment',
         'N      New comment',
         'S      Show / hide Study Panel',
+        'Shift+Enter  Add or save comment',
         'Esc    Cancel comment or close Study Panel',
         '?      Show this help',
       ].join('\n'),
@@ -2082,7 +2135,7 @@ function App() {
       }
 
       if (event.key === 'Escape') {
-        if (composerOpen) {
+        if (composerOpen || editingCommentId) {
           event.preventDefault();
           cancelComment();
           return;
@@ -2123,6 +2176,11 @@ function App() {
         void copyPageStudyPacket();
         return;
       }
+      if (key === 'e') {
+        event.preventDefault();
+        editLatestComment();
+        return;
+      }
       if (key === 'n') {
         event.preventDefault();
         openNewComment();
@@ -2147,6 +2205,8 @@ function App() {
     copyPageStudyPacket,
     dialog,
     drivePickerOpen,
+    editLatestComment,
+    editingCommentId,
     movePage,
     openNewComment,
     pageIndex,
@@ -3038,7 +3098,7 @@ function PdfPageView({
         const fitPageScale = Math.min(availableWidth / baseViewport.width, availableHeight / baseViewport.height);
         const fitWidthScale = availableWidth / baseViewport.width;
         const minManualZoom = Math.min(MinManualZoom, fitPageScale);
-        const maxManualZoom = Math.max(minManualZoom, fitWidthScale);
+        const maxManualZoom = Math.max(minManualZoom, MaxStoredManualZoom);
         const scale = zoomMode === 'fitPage'
           ? fitPageScale
           : zoomMode === 'fitWidth'
@@ -3046,7 +3106,9 @@ function PdfPageView({
             : clamp(manualZoom, minManualZoom, maxManualZoom);
         const boundedScale = Math.max(scale, 0.1);
         const viewport = page.getViewport({ scale: boundedScale });
-        const ratio = window.devicePixelRatio || 1;
+        const viewportPixels = Math.max(viewport.width * viewport.height, 1);
+        const renderPixelRatio = Math.sqrt(MaxPdfRenderPixels / viewportPixels);
+        const ratio = Math.min(window.devicePixelRatio || 1, renderPixelRatio);
         const context = canvas.getContext('2d');
         if (!context) return;
         canvas.width = Math.floor(viewport.width * ratio);
@@ -3379,6 +3441,7 @@ function CommentsPanel({
             ref={textareaRef}
             value={commentDraft}
             onChange={(event) => onCommentDraftChange(event.target.value)}
+            onKeyDown={(event) => submitCommentOnShiftEnter(event, commentDraft, onSaveComment)}
             placeholder="Comment"
           />
         </div>
@@ -3412,6 +3475,10 @@ function CommentCard({
     if (selected) textareaRef.current?.focus();
   }, [selected]);
 
+  useEffect(() => {
+    if (selected && textareaRef.current) resizeCommentEditor(textareaRef.current);
+  }, [draft, selected]);
+
   return (
     <article className={`comment-card ${selected ? 'active' : ''}`}>
       {selected ? (
@@ -3421,6 +3488,7 @@ function CommentCard({
             className="comment-inline-editor"
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={(event) => submitCommentOnShiftEnter(event, draft, onSave)}
             placeholder="Comment"
           />
           <div className="comment-actions">

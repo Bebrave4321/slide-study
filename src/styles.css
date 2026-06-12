@@ -773,8 +773,14 @@ body.drive-picker-open {
 
 .pdf-stage.scroll-fit {
   align-items: flex-start;
+  justify-content: flex-start;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
+}
+
+.pdf-stage.scroll-fit .pdf-page-shell {
+  flex: 0 0 auto;
+  margin: 2px auto;
 }
 
 .pdf-stage.fit-page {
@@ -1066,20 +1072,24 @@ body.drive-picker-open {
 
 .comment-inline-editor {
   width: 100%;
-  min-height: 118px;
+  min-height: 1.45em;
   max-height: min(220px, 32dvh);
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
+  resize: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   outline: none;
   color: var(--text);
-  background: var(--surface);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .comment-inline-editor:focus {
-  border-color: var(--accent);
+  outline: none;
 }
 
 .composer {
@@ -1892,9 +1902,8 @@ body.drive-picker-open {
   }
 
   .comment-inline-editor {
-    min-height: 74px;
+    min-height: 1.45em;
     max-height: clamp(82px, calc(var(--mobile-study-panel-height, 172px) - 86px), 142px);
-    resize: vertical;
   }
 
   .study-panel .composer {
@@ -2126,7 +2135,7 @@ body.drive-picker-open {
   }
 
   .comment-inline-editor {
-    min-height: 58px;
+    min-height: 1.45em;
     max-height: 92px;
   }
 }
