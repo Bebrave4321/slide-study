@@ -68,6 +68,7 @@ import {
   StudyPanelWidthMin,
   StudyPanelWidthStep,
   UnfiledSubjectId,
+  ZoomStepPercentOptions,
   clamp,
   composeStoredDocument,
   createInitialAppState,
@@ -187,7 +188,6 @@ type SourceConnectionInfo = {
   description: string;
 };
 
-const ZoomStep = 0.05;
 const MaxPdfRenderPixels = 16_000_000;
 const SubjectMenuWidth = 176;
 const SubjectMenuEstimatedHeight = 92;
@@ -1186,12 +1186,20 @@ function App() {
     if (!selectedDoc) return;
     const { minManualZoom, maxManualZoom, effectiveZoom } = zoomMetrics;
     if (maxManualZoom <= minManualZoom) return;
+    const zoomStep = stored.settings.readerSettings.zoomStepPercent / 100;
     const currentZoom = currentZoomMode === 'manual'
       ? clamp(currentManualZoom, minManualZoom, maxManualZoom)
       : clamp(effectiveZoom, minManualZoom, maxManualZoom);
-    const nextZoom = clamp(currentZoom + direction * ZoomStep, minManualZoom, maxManualZoom);
+    const nextZoom = clamp(currentZoom + direction * zoomStep, minManualZoom, maxManualZoom);
     persistDocZoom(selectedDoc.key, 'manual', Number(nextZoom.toFixed(3)));
-  }, [currentManualZoom, currentZoomMode, persistDocZoom, selectedDoc, zoomMetrics]);
+  }, [
+    currentManualZoom,
+    currentZoomMode,
+    persistDocZoom,
+    selectedDoc,
+    stored.settings.readerSettings.zoomStepPercent,
+    zoomMetrics,
+  ]);
 
   const handleZoomMetricsChange = useCallback((nextMetrics: ZoomMetrics) => {
     setZoomMetrics((current) => {
@@ -1533,7 +1541,11 @@ function App() {
   const updateReaderSetting = useCallback((key: keyof ReaderSettingsState, value: number) => {
     const nextValue = key === 'studyPanelWidth'
       ? clamp(value, StudyPanelWidthMin, StudyPanelWidthMax)
-      : clamp(value, MobileStudyPanelHeightMin, MobileStudyPanelHeightMax);
+      : key === 'mobileStudyPanelHeight'
+        ? clamp(value, MobileStudyPanelHeightMin, MobileStudyPanelHeightMax)
+        : ZoomStepPercentOptions.includes(value as (typeof ZoomStepPercentOptions)[number])
+          ? value
+          : stored.settings.readerSettings.zoomStepPercent;
     setStored((prev) => ({
       ...prev,
       settings: {
@@ -1544,7 +1556,7 @@ function App() {
         },
       },
     }));
-  }, []);
+  }, [stored.settings.readerSettings.zoomStepPercent]);
 
   const exportSyncData = useCallback(() => {
     try {
@@ -3742,6 +3754,25 @@ function SettingsDialog({
                     readerSettings.mobileStudyPanelHeight + MobileStudyPanelHeightStep,
                   )}
                 />
+              </div>
+            </div>
+            <div className="setting-row static-row">
+              <span>
+                <strong>Zoom step</strong>
+                <span>Amount changed by each - / + press</span>
+              </span>
+              <div className="setting-segmented" aria-label="Zoom step">
+                {ZoomStepPercentOptions.map((step) => (
+                  <button
+                    key={step}
+                    type="button"
+                    className={readerSettings.zoomStepPercent === step ? 'active' : ''}
+                    aria-pressed={readerSettings.zoomStepPercent === step}
+                    onClick={() => onUpdateReaderSetting('zoomStepPercent', step)}
+                  >
+                    {step}%
+                  </button>
+                ))}
               </div>
             </div>
           </div>

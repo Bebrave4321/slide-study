@@ -1434,6 +1434,44 @@ body.drive-picker-open {
   font-variant-numeric: tabular-nums;
 }
 
+.setting-segmented {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(42px, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.setting-segmented button {
+  min-height: 34px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  padding: 0 9px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.setting-segmented button:first-child {
+  border-left: 0;
+}
+
+.setting-segmented button:hover {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.setting-segmented button.active {
+  color: var(--text);
+  background: var(--surface-strong);
+  font-weight: 700;
+}
+
 .setting-toggle {
   position: relative;
   flex: 0 0 auto;
@@ -2022,6 +2060,14 @@ body.drive-picker-open {
   .setting-stepper {
     width: 100%;
     grid-template-columns: 42px minmax(0, 1fr) 42px;
+  }
+
+  .setting-segmented {
+    width: 100%;
+  }
+
+  .setting-segmented button {
+    min-height: 38px;
   }
 
   .library-main {

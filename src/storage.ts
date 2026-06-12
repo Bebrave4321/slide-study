@@ -84,6 +84,7 @@ export type DriveSyncSettingsState = {
 export type ReaderSettingsState = {
   studyPanelWidth: number;
   mobileStudyPanelHeight: number;
+  zoomStepPercent: number;
 };
 
 export type StoredSubject = {
@@ -197,6 +198,7 @@ export const StudyPanelWidthStep = 40;
 export const MobileStudyPanelHeightMin = 118;
 export const MobileStudyPanelHeightMax = 260;
 export const MobileStudyPanelHeightStep = 24;
+export const ZoomStepPercentOptions = [5, 10, 15, 20] as const;
 export const FutureStudyDataSlots = ['track', 'transcript', 'timeline'] as const;
 
 export const DefaultCopyPacketOptions: CopyPacketOptions = {
@@ -211,6 +213,7 @@ export const DefaultCopyPacketOptions: CopyPacketOptions = {
 export const DefaultReaderSettings: ReaderSettingsState = {
   studyPanelWidth: 380,
   mobileStudyPanelHeight: 172,
+  zoomStepPercent: 5,
 };
 
 export const DefaultDriveAuthSettings: DriveAuthSettingsState = {
@@ -651,6 +654,12 @@ function normalizeCopySettings(settings?: AppStateRecord): CopyPacketOptions {
 }
 
 function normalizeReaderSettings(settings?: AppStateRecord): ReaderSettingsState {
+  const zoomStepPercent = integerInRange(
+    settings?.zoomStepPercent,
+    DefaultReaderSettings.zoomStepPercent,
+    ZoomStepPercentOptions[0],
+    ZoomStepPercentOptions[ZoomStepPercentOptions.length - 1],
+  );
   return {
     studyPanelWidth: integerInRange(
       settings?.studyPanelWidth,
@@ -664,6 +673,11 @@ function normalizeReaderSettings(settings?: AppStateRecord): ReaderSettingsState
       MobileStudyPanelHeightMin,
       MobileStudyPanelHeightMax,
     ),
+    zoomStepPercent: ZoomStepPercentOptions.includes(
+      zoomStepPercent as (typeof ZoomStepPercentOptions)[number],
+    )
+      ? zoomStepPercent
+      : DefaultReaderSettings.zoomStepPercent,
   };
 }
 
