@@ -3408,9 +3408,14 @@ function CommentsPanel({
   onDeleteComment: (commentId: string) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
   useEffect(() => {
     if (composerOpen) textareaRef.current?.focus();
   }, [composerOpen]);
+
+  useEffect(() => {
+    if (composerOpen && textareaRef.current) resizeCommentEditor(textareaRef.current);
+  }, [commentDraft, composerOpen]);
 
   return (
     <div className="panel-body">
@@ -3431,7 +3436,7 @@ function CommentsPanel({
         )}
       </div>
       <div className="comment-list">
-        {comments.length === 0 ? (
+        {comments.length === 0 && !composerOpen ? (
           <div className="empty-state">No comments yet.</div>
         ) : comments.map((comment) => (
           <CommentCard
@@ -3448,15 +3453,16 @@ function CommentsPanel({
         ))}
       </div>
       {composerOpen && (
-        <div className="composer">
+        <article className="comment-card active comment-composer-card">
           <textarea
             ref={textareaRef}
+            className="comment-inline-editor"
             value={commentDraft}
             onChange={(event) => onCommentDraftChange(event.target.value)}
             onKeyDown={(event) => submitCommentOnShiftEnter(event, commentDraft, onSaveComment)}
             placeholder="Comment"
           />
-        </div>
+        </article>
       )}
     </div>
   );

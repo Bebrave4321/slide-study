@@ -1092,23 +1092,8 @@ body.drive-picker-open {
   outline: none;
 }
 
-.composer {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface-raised);
-  padding: 10px;
-}
-
-.composer textarea {
-  width: 100%;
-  min-height: 84px;
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
-  outline: none;
-  color: var(--text);
-  background: var(--surface);
+.comment-composer-card {
+  flex: 0 0 auto;
 }
 
 .empty-state {
@@ -1906,10 +1891,6 @@ body.drive-picker-open {
     max-height: clamp(82px, calc(var(--mobile-study-panel-height, 172px) - 86px), 142px);
   }
 
-  .study-panel .composer {
-    padding: 8px;
-  }
-
   .study-panel.composer-open {
     height: min(max(var(--mobile-study-panel-height, 172px), 220px), 42dvh);
     max-height: min(max(var(--mobile-study-panel-height, 172px), 220px), 42dvh);
@@ -1918,11 +1899,6 @@ body.drive-picker-open {
   .study-panel.composer-open .comment-list {
     flex: 0 0 auto;
     max-height: 44px;
-  }
-
-  .composer textarea {
-    min-height: 58px;
-    max-height: 82px;
   }
 
   .mobile-page-nav {
@@ -2127,11 +2103,6 @@ body.drive-picker-open {
   .study-panel.composer-open {
     height: min(max(var(--mobile-study-panel-height, 172px), 190px), 46dvh);
     max-height: min(max(var(--mobile-study-panel-height, 172px), 190px), 46dvh);
-  }
-
-  .composer textarea {
-    min-height: 48px;
-    max-height: 68px;
   }
 
   .comment-inline-editor {
