@@ -3645,6 +3645,9 @@ function SettingsDialog({
   const canIncreasePanelWidth = readerSettings.studyPanelWidth < StudyPanelWidthMax;
   const canDecreaseMobilePanelHeight = readerSettings.mobileStudyPanelHeight > MobileStudyPanelHeightMin;
   const canIncreaseMobilePanelHeight = readerSettings.mobileStudyPanelHeight < MobileStudyPanelHeightMax;
+  const canDecreaseZoomStep = readerSettings.zoomStepPercent > ZoomStepPercentOptions[0];
+  const canIncreaseZoomStep = readerSettings.zoomStepPercent
+    < ZoomStepPercentOptions[ZoomStepPercentOptions.length - 1];
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3761,18 +3764,26 @@ function SettingsDialog({
                 <strong>Zoom step</strong>
                 <span>Amount changed by each - / + press</span>
               </span>
-              <div className="setting-segmented" aria-label="Zoom step">
-                {ZoomStepPercentOptions.map((step) => (
-                  <button
-                    key={step}
-                    type="button"
-                    className={readerSettings.zoomStepPercent === step ? 'active' : ''}
-                    aria-pressed={readerSettings.zoomStepPercent === step}
-                    onClick={() => onUpdateReaderSetting('zoomStepPercent', step)}
-                  >
-                    {step}%
-                  </button>
-                ))}
+              <div className="setting-stepper" aria-label="Zoom step">
+                <IconButton
+                  label="Decrease zoom step"
+                  icon={Minus}
+                  disabled={!canDecreaseZoomStep}
+                  onClick={() => onUpdateReaderSetting(
+                    'zoomStepPercent',
+                    readerSettings.zoomStepPercent - 5,
+                  )}
+                />
+                <strong>{readerSettings.zoomStepPercent}%</strong>
+                <IconButton
+                  label="Increase zoom step"
+                  icon={Plus}
+                  disabled={!canIncreaseZoomStep}
+                  onClick={() => onUpdateReaderSetting(
+                    'zoomStepPercent',
+                    readerSettings.zoomStepPercent + 5,
+                  )}
+                />
               </div>
             </div>
           </div>
